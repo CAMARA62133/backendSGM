@@ -1,108 +1,120 @@
-// controllers/userControllers.js
-import fs from "fs";
-import User from "../models/User.js";
+import fs from "fs"; // Module pour gérer les fichiers (lecture, suppression, etc.)
+import XLSX from "xlsx"; // Module pour lire/écrire les fichiers Excel/CSV
+import bcrypt from "bcrypt"; // Module pour le hachage des mots de passe
+import User from "../models/User.js"; // Modèle Mongoose de l'utilisateur
 
-// ===== CREATE USER =====
+/**
+ * ==============================
+ * CREATE USER
+ * ==============================
+ * Crée un nouvel utilisateur dans la base de données.
+ * Vérifie les champs obligatoires et gère l'upload de photo.
+ * Route : POST /api/users
+ * Accès : Privé
+ */
 export const createUser = async (req, res) => {
   try {
-    const { type, nom, prenom, email, password, telephone, adresse } = req.body;
-    let { enseignant, parent } = req.body;
+    const {
+      type,
+      nom,
+      prenom,
+      password,
+      telephone,
+      adresse,
+      pays,
+      region,
+      etablissement,
+    } = req.body;
 
-    // Vérifie si l'email existe déjà
-    const exist = await User.findOne({ email });
-    if (exist) return res.status(400).json({ message: "Email déjà utilisé" });
-
-    // Création de l'objet user selon type
-    const userData = { type, nom, prenom, email, password, telephone, adresse };
-
-    if (type === "enseignant") {
-      // On garde uniquement les champs enseignants
-      userData.enseignant = {
-        matricule: enseignant?.matricule || "",
-        specialite: enseignant?.specialite || "",
-        documents_administratifs: [],
-      };
-    } else if (type === "parent") {
-      // On garde uniquement les champs parent
-      if (!parent?.eleve_id)
-        return res
-          .status(400)
-          .json({ message: "Un parent doit avoir un eleve_id" });
-      userData.parent = { eleve_id: parent.eleve_id };
+    // Validation minimale : tous les champs obligatoires doivent être présents
+    if (
+      !type ||
+      !nom ||
+      !prenom ||
+      !password ||
+      !pays ||
+      !region ||
+      !etablissement
+    ) {
+      return res.status(400).json({
+        message: "Veuillez remplir tous les champs obligatoires.",
+      });
     }
 
-    const user = new User(userData);
+    // Création de l'objet utilisateur
+    const user = new User({
+      type,
+      nom,
+      prenom,
+      password,
+      telephone,
+      adresse,
+      pays,
+      region,
+      etablissement,
+    });
 
-    // Gestion fichier uploadé
+    // Gestion de la photo uploadée
     if (req.file) {
       const ext = req.file.mimetype;
-
-      if (ext.includes("pdf") && type === "enseignant") {
-        user.enseignant.documents_administratifs.push({
-          nom: req.file.originalname,
-          url: "/uploads/fichiers/" + req.file.filename,
-        });
-      } else if (
-        ext.includes("jpeg") ||
-        ext.includes("jpg") ||
-        ext.includes("png")
-      ) {
-        user.photo = "/uploads/photos/" + req.file.filename;
+      if (ext.includes("jpeg") || ext.includes("jpg") || ext.includes("png")) {
+        user.photo = "/uploads/photos/" + req.file.filename; // Stockage du chemin relatif
       }
     }
 
-    await user.save();
-    res.status(201).json({ message: "User créé", user });
+    await user.save(); // Enregistrement en DB
+
+    res.status(201).json({
+      message: "Utilisateur créé avec succès.",
+      user,
+    });
   } catch (err) {
     console.error("❌ Erreur createUser :", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-// ===== UPDATE USER =====
+/**
+ * ==============================
+ * UPDATE USER
+ * ==============================
+ * Met à jour les informations d'un utilisateur existant.
+ * Gère également la suppression et remplacement de la photo.
+ * Route : PUT /api/users/:id
+ * Accès : Privé
+ */
 export const updateUser = async (req, res) => {
   try {
-    const { nom, prenom, telephone, adresse, enseignant, parent, isActif } =
-      req.body;
+    const {
+      nom,
+      prenom,
+      telephone,
+      adresse,
+      isActif,
+      pays,
+      region,
+      etablissement,
+    } = req.body;
 
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User non trouvé" });
+    const user = await User.findById(req.params.id); // Recherche utilisateur par ID
+    if (!user)
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
 
-    // Mise à jour des champs généraux
+    // Mise à jour des champs si fournis
     if (nom) user.nom = nom;
     if (prenom) user.prenom = prenom;
     if (telephone) user.telephone = telephone;
     if (adresse) user.adresse = adresse;
     if (typeof isActif === "boolean") user.isActif = isActif;
+    if (pays) user.pays = pays;
+    if (region) user.region = region;
+    if (etablissement) user.etablissement = etablissement;
 
-    // Mise à jour selon type
-    if (user.type === "enseignant" && enseignant) {
-      user.enseignant = { ...user.enseignant, ...enseignant };
-    } else if (user.type === "parent" && parent) {
-      user.parent = { ...user.parent, ...parent };
-    }
-
-    // Gestion du fichier uploadé
+    // Gestion du fichier photo uploadé
     if (req.file) {
       const ext = req.file.mimetype;
-
-      if (ext.includes("pdf") && user.type === "enseignant") {
-        if (user.enseignant.documents_administratifs.length > 0) {
-          const lastDoc = user.enseignant.documents_administratifs.at(-1);
-          if (lastDoc && fs.existsSync("public" + lastDoc.url)) {
-            fs.unlinkSync("public" + lastDoc.url);
-          }
-          user.enseignant.documents_administratifs.pop();
-        }
-        user.enseignant.documents_administratifs.push({
-          nom: req.file.originalname,
-          url: "/uploads/fichiers/" + req.file.filename,
-        });
-      } else if (
-        ext.includes("jpeg") ||
-        ext.includes("jpg") ||
-        ext.includes("png")
-      ) {
+      if (ext.includes("jpeg") || ext.includes("jpg") || ext.includes("png")) {
+        // Supprimer l'ancienne photo si elle existe
         if (user.photo && fs.existsSync("public" + user.photo)) {
           fs.unlinkSync("public" + user.photo);
         }
@@ -110,30 +122,46 @@ export const updateUser = async (req, res) => {
       }
     }
 
-    await user.save();
-    res.json({ message: "User mis à jour", user });
+    await user.save(); // Sauvegarde des modifications
+
+    res.json({ message: "Utilisateur mis à jour avec succès.", user });
   } catch (err) {
     console.error("❌ Erreur updateUser :", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-// ===== GET ALL USERS =====
+/**
+ * ==============================
+ * GET ALL USERS
+ * ==============================
+ * Récupère tous les utilisateurs.
+ * Route : GET /api/users
+ * Accès : Privé
+ */
 export const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find();
-    res.json(users);
+    const users = await User.find().sort({ createdAt: -1 }); // Tri décroissant par date de création
+    res.json({ users });
   } catch (err) {
     console.error("❌ Erreur getAllUsers :", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-// ===== GET USER BY ID =====
+/**
+ * ==============================
+ * GET USER BY ID
+ * ==============================
+ * Récupère un utilisateur spécifique par son ID.
+ * Route : GET /api/users/:id
+ * Accès : Privé
+ */
 export const getUserById = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User non trouvé" });
+    if (!user)
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
     res.json(user);
   } catch (err) {
     console.error("❌ Erreur getUserById :", err);
@@ -141,33 +169,131 @@ export const getUserById = async (req, res) => {
   }
 };
 
-// ===== DELETE USER =====
+/**
+ * ==============================
+ * DELETE USER
+ * ==============================
+ * Supprime un utilisateur par son ID.
+ * Supprime également la photo associée si elle existe.
+ * Route : DELETE /api/users/:id
+ * Accès : Privé
+ */
 export const deleteUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User non trouvé" });
+    if (!user)
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
 
-    // Supprimer photo
+    // Suppression de la photo si existante
     if (user.photo && fs.existsSync("public" + user.photo)) {
       fs.unlinkSync("public" + user.photo);
     }
 
-    // Supprimer documents administratifs si enseignant
-    if (
-      user.type === "enseignant" &&
-      user.enseignant.documents_administratifs.length > 0
-    ) {
-      user.enseignant.documents_administratifs.forEach((doc) => {
-        if (fs.existsSync("public" + doc.url)) {
-          fs.unlinkSync("public" + doc.url);
-        }
-      });
-    }
+    await User.findByIdAndDelete(req.params.id); // Suppression en DB
 
-    await User.findByIdAndDelete(req.params.id);
-    res.json({ message: "Utilisateur supprimé avec succès" });
+    res.json({ message: "Utilisateur supprimé avec succès." });
   } catch (err) {
     console.error("❌ Erreur deleteUser :", err);
     res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * ==============================
+ * RESET PASSWORD
+ * ==============================
+ * Réinitialise le mot de passe d'un utilisateur via son email.
+ * Route : POST /api/users/reset-password
+ * Accès : Privé ou public selon la logique métier
+ */
+export const resetPassword = async (req, res) => {
+  try {
+    const { email, newPassword } = req.body;
+
+    const user = await User.findOne({ email }).select("+password");
+    if (!user) return res.status(404).json({ message: "Email non trouvé." });
+
+    // Si aucun nouveau mot de passe fourni, seulement notifier
+    if (!newPassword)
+      return res.status(200).json({
+        message: "Email trouvé. Entrez un nouveau mot de passe.",
+      });
+
+    user.password = newPassword;
+    await user.save(); // Sauvegarde du nouveau mot de passe
+
+    res.status(200).json({ message: "Mot de passe réinitialisé avec succès." });
+  } catch (err) {
+    console.error("❌ Erreur resetPassword :", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * ==============================
+ * IMPORT USERS FROM EXCEL/CSV
+ * ==============================
+ * Permet d'importer plusieurs utilisateurs depuis un fichier Excel ou CSV.
+ * Route : POST /api/users/import
+ * Accès : Privé
+ */
+export const importUsers = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "Aucun fichier fourni" });
+    }
+
+    // Lecture du fichier Excel/CSV
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0]; // Première feuille
+    const sheet = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+    const users = [];
+
+    for (let row of sheet) {
+      // Ignorer les lignes incomplètes
+      if (
+        !row.nom ||
+        !row.prenom ||
+        !row.password ||
+        !row.pays ||
+        !row.region ||
+        !row.etablissement
+      ) {
+        continue;
+      }
+
+      // Hachage du mot de passe avant sauvegarde
+      const hashedPassword = await bcrypt.hash(row.password, 10);
+
+      // Création de l'objet utilisateur
+      const user = new User({
+        type: row.type || "user",
+        nom: row.nom,
+        prenom: row.prenom,
+        password: hashedPassword,
+        telephone: row.telephone || "",
+        adresse: row.adresse || "",
+        pays: row.pays,
+        region: row.region,
+        etablissement: row.etablissement,
+      });
+
+      await user.validate(); // Validation avant insertion
+      users.push(user);
+    }
+
+    // Insertion en masse pour performance
+    await User.insertMany(users);
+
+    res.status(201).json({
+      message: `${users.length} utilisateurs importés avec succès.`,
+      count: users.length,
+    });
+  } catch (err) {
+    console.error("Erreur import:", err);
+    res
+      .status(500)
+      .json({ message: "Erreur lors de l'importation des utilisateurs." });
   }
 };
