@@ -1,7 +1,7 @@
 // ===============================================================
 // 📂 Fichier : controllers/authControllers.js
 // ===============================================================
-// Ce contrôleur gère toutes les opérations liées à l'authentification des utilisateurs :
+// Ce contrôleur gère les opérations d’authentification des utilisateurs :
 // - Connexion (login)
 // - Déconnexion (logout)
 // - Activation/Désactivation d’un utilisateur
@@ -11,15 +11,10 @@
 // ===============================================================
 // 📦 Importation des modules nécessaires
 // ===============================================================
-
-// Modèle utilisateur (pour accéder aux données dans MongoDB)
-import User from "../models/User.js";
-
-// Fonctions utilitaires JWT pour la création de tokens d’authentification
-import { createToken, maxAge } from "../utils/jwtUtil.js";
-
-// Modèle de notifications (pour enregistrer et émettre des notifications)
-import Notification from "../models/Notification.js";
+import User from "../models/User.js"; // Modèle Sequelize
+import Notification from "../models/Notification.js"; // Modèle Notification Sequelize
+import { createToken, maxAge } from "../utils/jwtUtil.js"; // Gestion JWT
+import bcrypt from "bcrypt";
 
 // ===============================================================
 // 🔐 --- LOGIN (Connexion d’un utilisateur) ---
@@ -27,47 +22,59 @@ import Notification from "../models/Notification.js";
 
 export const login = async (req, res) => {
   try {
-    // Extraction de l'email et du mot de passe envoyés dans la requête
     const { email, password } = req.body;
 
-    // Vérifie si les identifiants sont valides à l’aide de la méthode statique "login" du modèle User
-    const user = await User.login(email, password);
+    // Vérifie si l'utilisateur existe dans la base
+    const user = await User.findOne({ where: { email } });
+    if (!user)
+      return res
+        .status(400)
+        .json({ message: "Email ou mot de passe incorrect" });
 
-    // Génère un token JWT contenant l’ID utilisateur
-    const token = createToken(user._id);
+    // Vérifie le mot de passe (haché avec bcrypt)
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid)
+      return res
+        .status(400)
+        .json({ message: "Email ou mot de passe incorrect" });
 
-    // Sauvegarde du user (utile si certains champs comme "dernier login" doivent être mis à jour)
-    await user.save();
+    // Vérifie si le compte est actif
+    if (!user.isActif) {
+      return res.status(403).json({
+        message: "Compte désactivé. Contactez l'administrateur.",
+      });
+    }
+
+    // Création du token JWT
+    const token = createToken(user.id);
 
     // ===============================================================
-    // 🔔 Création d’une notification de connexion
+    // 🔔 Enregistrement d’une notification de connexion
     // ===============================================================
-    const notif = new Notification({
-      user: user._id,
+    const notif = await Notification.create({
+      userId: user.id,
       message: `Connexion réussie pour ${user.nom} ${user.prenom}`,
       data: { type: "login" },
     });
-    await notif.save();
 
-    // Envoi en temps réel de la notification via Socket.IO (si disponible)
-    if (req.io)
-      req.io.to(user._id.toString()).emit("nouvelle_notification", notif);
+    // Émission temps réel si Socket.IO est connecté
+    if (req.io) {
+      req.io.emit("nouvelle_notification", notif);
+    }
 
-    // ===============================================================
-    // 🍪 Envoi du cookie JWT au client
-    // ===============================================================
+    // Envoi du cookie JWT
     res
       .cookie("jwt", token, {
-        httpOnly: true, // Empêche l’accès au cookie via JavaScript côté client (sécurité)
-        secure: process.env.NODE_ENV === "production", // Utilise HTTPS seulement en production
-        maxAge: maxAge * 1000, // Durée de vie du token (convertie en millisecondes)
-        sameSite: "lax", // Protection CSRF tout en autorisant la navigation interne
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        maxAge: maxAge * 1000,
+        sameSite: "lax",
       })
       .status(200)
       .json({
         message: "Connexion réussie",
         user: {
-          id: user._id,
+          id: user.id,
           nom: user.nom,
           prenom: user.prenom,
           email: user.email,
@@ -75,9 +82,9 @@ export const login = async (req, res) => {
           isActif: user.isActif,
         },
       });
-  } catch (err) {
-    // Gestion des erreurs (identifiants invalides, utilisateur inactif, etc.)
-    res.status(400).json({ message: err.message });
+  } catch (error) {
+    console.error("❌ Erreur lors du login :", error);
+    res.status(500).json({ message: "Erreur serveur" });
   }
 };
 
@@ -87,28 +94,25 @@ export const login = async (req, res) => {
 
 export const logout = async (req, res) => {
   try {
-    // Vérifie qu’un utilisateur est bien authentifié avant d’enregistrer une notification
     if (req.user) {
-      const notif = new Notification({
-        user: req.user._id,
+      // Création d'une notification de déconnexion
+      const notif = await Notification.create({
+        userId: req.user.id,
         message: `Déconnexion réussie pour ${req.user.nom} ${req.user.prenom}`,
         data: { type: "logout" },
       });
-      await notif.save();
 
-      // Envoi temps réel via Socket.IO (si la connexion WebSocket existe)
-      if (req.io)
-        req.io.to(req.user._id.toString()).emit("nouvelle_notification", notif);
+      if (req.io) {
+        req.io.emit("nouvelle_notification", notif);
+      }
     }
 
-    // Suppression du cookie JWT (déconnexion)
-    res
-      .clearCookie("jwt", { httpOnly: true, sameSite: "lax" })
-      .status(200)
-      .json({ message: "Déconnexion réussie." });
-  } catch (err) {
-    // Gestion des erreurs éventuelles (ex : problème de base de données)
-    res.status(500).json({ message: err.message });
+    // Suppression du cookie JWT
+    res.clearCookie("jwt", { httpOnly: true, sameSite: "lax" });
+    res.status(200).json({ message: "Déconnexion réussie." });
+  } catch (error) {
+    console.error("❌ Erreur lors de la déconnexion :", error);
+    res.status(500).json({ message: "Erreur serveur" });
   }
 };
 
@@ -118,42 +122,36 @@ export const logout = async (req, res) => {
 
 export const toggleActive = async (req, res) => {
   try {
-    // Recherche de l’utilisateur cible à partir de l’ID passé en paramètre
-    const user = await User.findById(req.params.id);
-
-    // Si aucun utilisateur n’est trouvé, renvoyer une erreur 404
+    // Recherche de l'utilisateur par son ID
+    const user = await User.findByPk(req.params.id);
     if (!user)
       return res.status(404).json({ message: "Utilisateur non trouvé." });
 
-    // Inversion de l’état actuel (true ⇄ false)
+    // Inversion de l'état actif/inactif
     user.isActif = !user.isActif;
     await user.save();
 
-    // ===============================================================
-    // 🔔 Notification d’activation ou désactivation
-    // ===============================================================
-    const notif = new Notification({
-      user: req.user._id, // L’utilisateur qui effectue l’action (admin)
+    // Création d’une notification d’action
+    const notif = await Notification.create({
+      userId: req.user.id, // L'administrateur qui a fait le changement
       message: `Utilisateur ${user.nom} ${user.prenom} ${
         user.isActif ? "activé" : "désactivé"
       }`,
-      data: { userId: user._id, type: "toggleActive" },
+      data: { userId: user.id, type: "toggleActive" },
     });
-    await notif.save();
 
-    // Envoi en temps réel (Socket.IO)
-    if (req.io)
-      req.io.to(req.user._id.toString()).emit("nouvelle_notification", notif);
+    if (req.io) {
+      req.io.emit("nouvelle_notification", notif);
+    }
 
-    // Réponse HTTP de succès
     res.status(200).json({
       message: `Utilisateur ${user.nom} ${user.prenom} ${
         user.isActif ? "activé" : "désactivé"
       } avec succès.`,
     });
-  } catch (err) {
-    // Gestion des erreurs serveur
-    res.status(500).json({ message: err.message });
+  } catch (error) {
+    console.error("❌ Erreur lors du changement d’état :", error);
+    res.status(500).json({ message: "Erreur serveur" });
   }
 };
 
@@ -161,17 +159,26 @@ export const toggleActive = async (req, res) => {
 // 👤 --- GET CURRENT USER (Utilisateur connecté) ---
 // ===============================================================
 
-export const getCurrentUser = (req, res) => {
+export const getCurrentUser = async (req, res) => {
   try {
-    // Vérifie si un utilisateur est authentifié via middleware (JWT)
     if (!req.user) {
       return res.status(401).json({ message: "Non authentifié" });
     }
 
-    // Retourne les informations de l’utilisateur connecté
-    res.status(200).json({ user: req.user });
-  } catch (err) {
-    // En cas d’erreur inattendue
-    res.status(500).json({ message: err.message });
+    // Récupère l’utilisateur connecté depuis la base (avec Sequelize)
+    const user = await User.findByPk(req.user.id, {
+      attributes: { exclude: ["password"] },
+    });
+
+    if (!user)
+      return res.status(404).json({ message: "Utilisateur non trouvé" });
+
+    res.status(200).json({ user });
+  } catch (error) {
+    console.error(
+      "❌ Erreur lors de la récupération de l'utilisateur :",
+      error
+    );
+    res.status(500).json({ message: "Erreur serveur" });
   }
 };

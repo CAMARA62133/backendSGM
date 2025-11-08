@@ -1,82 +1,80 @@
-import mongoose from "mongoose";
+import { DataTypes } from "sequelize";
+import { sequelize } from "../config/db.js";
+import User from "./User.js"; // Modèle utilisateur
 
 // ==============================
-// 🔹 Schéma pour les pièces jointes d'un message
+// 🔹 Modèle pour les pièces jointes d'un message
 // ==============================
-const pieceJointeSchema = new mongoose.Schema({
-  nom: String, // Nom du fichier
-  chemin: String, // Chemin ou URL où le fichier est stocké
-  typeMime: String, // Type MIME du fichier (ex: image/png, application/pdf)
-  taille: Number, // Taille du fichier en octets
+const PieceJointe = sequelize.define(
+  "PieceJointe",
+  {
+    nom: { type: DataTypes.STRING },
+    chemin: { type: DataTypes.STRING },
+    typeMime: { type: DataTypes.STRING },
+    taille: { type: DataTypes.INTEGER },
+  },
+  { timestamps: false, tableName: "pieces_jointes" }
+);
+
+// ==============================
+// 🔹 Modèle principal pour les messages
+// ==============================
+const Message = sequelize.define(
+  "Message",
+  {
+    sujet: { type: DataTypes.STRING, allowNull: false },
+    contenu: { type: DataTypes.TEXT, allowNull: false },
+    estBrouillon: { type: DataTypes.BOOLEAN, defaultValue: false },
+    estLu: { type: DataTypes.BOOLEAN, defaultValue: false },
+    estFavori: { type: DataTypes.BOOLEAN, defaultValue: false },
+    estArchive: { type: DataTypes.BOOLEAN, defaultValue: false },
+    estSupprime: { type: DataTypes.BOOLEAN, defaultValue: false },
+    dateEnvoi: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    dateSuppression: { type: DataTypes.DATE, defaultValue: null },
+  },
+  { timestamps: true, tableName: "messages" }
+);
+
+// ==============================
+// 🔹 Relations
+// ==============================
+
+// Expéditeur : un utilisateur peut envoyer plusieurs messages
+Message.belongsTo(User, { as: "expediteur", foreignKey: "expediteurId" });
+User.hasMany(Message, { as: "messagesEnvoyes", foreignKey: "expediteurId" });
+
+// Destinataires : relation N-N (un message peut avoir plusieurs destinataires)
+const MessageDestinataire = sequelize.define(
+  "MessageDestinataire",
+  {
+    lu: { type: DataTypes.BOOLEAN, defaultValue: false },
+    favori: { type: DataTypes.BOOLEAN, defaultValue: false },
+    archive: { type: DataTypes.BOOLEAN, defaultValue: false },
+    supprime: { type: DataTypes.BOOLEAN, defaultValue: false },
+  },
+  { timestamps: false, tableName: "messages_destinataires" }
+);
+
+Message.belongsToMany(User, {
+  through: MessageDestinataire,
+  as: "destinataires",
+  foreignKey: "messageId",
+  otherKey: "userId",
+});
+User.belongsToMany(Message, {
+  through: MessageDestinataire,
+  as: "messagesRecus",
+  foreignKey: "userId",
+  otherKey: "messageId",
 });
 
-// ==============================
-// 🔹 Schéma principal pour les messages
-// ==============================
-const messageSchema = new mongoose.Schema({
-  sujet: {
-    type: String,
-    required: true, // Sujet obligatoire
-    trim: true, // Supprime les espaces au début et à la fin
-  },
-  contenu: {
-    type: String,
-    required: true, // Contenu obligatoire
-  },
-  expediteur: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User", // Référence à l'utilisateur qui envoie le message
-    required: true,
-  },
-  destinataires: [
-    {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User", // Référence aux utilisateurs destinataires
-      required: true,
-    },
-  ],
-  threadId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Message", // Référence au message parent pour gérer les threads/conversations
-    default: null,
-  },
-  piecesJointes: [pieceJointeSchema], // Tableau de pièces jointes
-  estBrouillon: {
-    type: Boolean,
-    default: false, // Indique si le message est un brouillon
-  },
-  estLu: {
-    type: Boolean,
-    default: false, // Indique si le message a été lu par le destinataire
-  },
-  estFavori: {
-    type: Boolean,
-    default: false, // Indique si le message est marqué comme favori
-  },
-  estArchive: {
-    type: Boolean,
-    default: false, // Indique si le message est archivé
-  },
-  estSupprime: {
-    type: Boolean,
-    default: false, // Indique si le message est supprimé
-  },
-  dateEnvoi: {
-    type: Date,
-    default: Date.now, // Date d'envoi du message
-  },
-  dateSuppression: {
-    type: Date,
-    default: null, // Date de suppression du message (null si non supprimé)
-  },
-});
+// Thread : un message peut être lié à un message parent
+Message.belongsTo(Message, { as: "threadParent", foreignKey: "threadId" });
+Message.hasMany(Message, { as: "reponses", foreignKey: "threadId" });
 
-// ==============================
-// 🔹 Index pour améliorer les performances des requêtes
-// ==============================
-messageSchema.index({ expediteur: 1, dateEnvoi: -1 }); // Index pour les messages envoyés par utilisateur
-messageSchema.index({ destinataires: 1, dateEnvoi: -1 }); // Index pour les messages reçus par utilisateur
-messageSchema.index({ threadId: 1 }); // Index pour les threads/conversations
+// Pièces jointes : un message peut avoir plusieurs pièces jointes
+Message.hasMany(PieceJointe, { as: "piecesJointes", foreignKey: "messageId" });
+PieceJointe.belongsTo(Message, { foreignKey: "messageId" });
 
-// Export du modèle Message
-export default mongoose.model("Message", messageSchema);
+export { Message, PieceJointe, MessageDestinataire };
+export default Message;
