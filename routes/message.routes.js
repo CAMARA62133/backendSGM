@@ -51,7 +51,7 @@ router.get("/count/favori", requireAuth, nombreMessagesFavoris); // Nombre de me
 // -------------------------
 // Routes spécifiques pour filtrer les messages selon leur type ou dossier
 
-router.get("/", requireAuth,requireAdmin, getAllMessages); // Récupérer tous message
+router.get("/", requireAuth, getAllMessages); // Récupérer tous message
 router.get("/recus", requireAuth, getMessagesRecus); // Récupérer les messages reçus
 router.get("/envoyes", requireAuth, getMessagesEnvoyes); // Récupérer les messages envoyés
 router.get("/brouillons", requireAuth, getBrouillons); // Récupérer les brouillons

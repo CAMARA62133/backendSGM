@@ -29,7 +29,12 @@ const Message = sequelize.define(
     estFavori: { type: DataTypes.BOOLEAN, defaultValue: false },
     estArchive: { type: DataTypes.BOOLEAN, defaultValue: false },
     estSupprime: { type: DataTypes.BOOLEAN, defaultValue: false },
-    dateEnvoi: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    dateEnvoi: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      defaultValue: DataTypes.NOW,
+    },
+
     dateSuppression: { type: DataTypes.DATE, defaultValue: null },
   },
   { timestamps: true, tableName: "messages" }

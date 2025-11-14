@@ -131,13 +131,39 @@ export const updateUser = async (req, res) => {
  */
 export const getAllUsers = async (req, res) => {
   try {
-    const users = await User.findAll({ order: [["createdAt", "DESC"]] });
+    const loggedUser = req.user; // vient de requireAuth
+
+    let users;
+
+    // ADMIN ou USER→ voit tout
+    if (loggedUser.type === "admin" || loggedUser.type === "user") {
+      users = await User.findAll({
+        order: [["createdAt", "DESC"]],
+      });
+    }
+
+    // DIRECTEUR → voit seulement son établissement
+    else if (loggedUser.type === "directeur") {
+      users = await User.findAll({
+        where: { etablissement: loggedUser.etablissement },
+        order: [["createdAt", "DESC"]],
+      });
+    }
+
+    // AUTRE TYPE → accès refusé
+    else {
+      return res.status(403).json({
+        message: "Accès non autorisé",
+      });
+    }
+
     res.json({ users });
   } catch (err) {
     console.error("❌ Erreur getAllUsers :", err);
     res.status(500).json({ message: err.message });
   }
 };
+
 
 /**
  * ==============================

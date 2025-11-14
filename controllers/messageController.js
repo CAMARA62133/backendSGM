@@ -39,9 +39,17 @@ const convertirEmailsEnIds = async (emails) => {
    ====================================================== */
 const envoyerMessage = async (req, res) => {
   try {
-    const { sujet, contenu, destinataires, estBrouillon = false, threadId = null, mode = "new" } = req.body;
+    const {
+      sujet,
+      contenu,
+      destinataires,
+      estBrouillon = false,
+      threadId = null,
+      mode = "new",
+    } = req.body;
 
-    const { ids: idsDestinataires, emailsInvalides } = await convertirEmailsEnIds(destinataires);
+    const { ids: idsDestinataires, emailsInvalides } =
+      await convertirEmailsEnIds(destinataires);
     if (emailsInvalides.length > 0) {
       return res.status(400).json({
         success: false,
@@ -50,12 +58,13 @@ const envoyerMessage = async (req, res) => {
       });
     }
 
-    const piecesJointes = req.files?.map(file => ({
-      nom: file.originalname,
-      chemin: file.path,
-      typeMime: file.mimetype,
-      taille: file.size,
-    })) || [];
+    const piecesJointes =
+      req.files?.map((file) => ({
+        nom: file.originalname,
+        chemin: file.path,
+        typeMime: file.mimetype,
+        taille: file.size,
+      })) || [];
 
     const messageCree = await Message.create({
       sujet,
@@ -64,20 +73,32 @@ const envoyerMessage = async (req, res) => {
       threadId: mode === "reply" || mode === "forward" ? threadId : null,
       estBrouillon,
       piecesJointes,
-      dateEnvoi: estBrouillon ? null : new Date(),
     });
-
+    // Ajouter la dateEnvoi seulement si ce n'est pas un brouillon
+    if (!estBrouillon) {
+      messageData.dateEnvoi = new Date();
+    }
     await messageCree.setDestinataires(idsDestinataires);
 
     const messageAvecRelations = await Message.findByPk(messageCree.id, {
       include: [
-        { model: User, as: "expediteur", attributes: ["nom","prenom","email","photo"] },
-        { model: User, as: "destinataires", attributes: ["nom","prenom","email","photo"] },
+        {
+          model: User,
+          as: "expediteur",
+          attributes: ["nom", "prenom", "email", "photo"],
+        },
+        {
+          model: User,
+          as: "destinataires",
+          attributes: ["nom", "prenom", "email", "photo"],
+        },
       ],
     });
     res.status(201).json({
       success: true,
-      message: estBrouillon ? "Brouillon sauvegardé" : "Message envoyé avec succès",
+      message: estBrouillon
+        ? "Brouillon sauvegardé"
+        : "Message envoyé avec succès",
       data: messageAvecRelations,
     });
   } catch (error) {
@@ -169,7 +190,6 @@ const getBrouillons = async (req,res)=>{
       pagination:{page, pages:Math.ceil(total/limit), total},
     });
   } catch(error){
-    console.error("Erreur getBrouillons:",error);
     res.status(500).json({success:false,message:"Erreur serveur"});
   }
 };
@@ -197,33 +217,111 @@ const getMessage = async (req,res)=>{
   }
 };
 /* ======================================================
-   🔎 TOUS LES MESSAGES
+   🔎 TOUS LES MESSAGES (admin + directeur uniquement)
    ====================================================== */
 const getAllMessages = async (req, res) => {
   try {
-    if (!req.user?.id)
-      return res
-        .status(401)
-        .json({ success: false, message: "Utilisateur non authentifié" });
+    const loggedUser = req.user;
 
-    // Récupère tous les messages sans filtrage
-    const messages = await Message.findAll({
-      include: [
-        {
-          model: User,
-          as: "expediteur",
-          attributes: ["id", "nom", "prenom", "email", "photo"],
-        },
-        {
-          model: User,
-          as: "destinataires",
-          attributes: ["id", "nom", "prenom", "email", "photo"],
-          through: { attributes: [] },
-        },
-      ],
-      order: [["createdAt", "DESC"]],
-    });
+    if (!loggedUser?.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
 
+    let messages;
+
+    /* ======================================================
+       🟦 ADMIN → voit tous les messages
+       ====================================================== */
+    if (loggedUser.type === "admin" ) {
+      messages = await Message.findAll({
+        include: [
+          {
+            model: User,
+            as: "expediteur",
+            attributes: [
+              "id",
+              "nom",
+              "prenom",
+              "email",
+              "photo",
+              "etablissement",
+            ],
+          },
+          {
+            model: User,
+            as: "destinataires",
+            attributes: [
+              "id",
+              "nom",
+              "prenom",
+              "email",
+              "photo",
+              "etablissement",
+            ],
+            through: { attributes: [] },
+          },
+        ],
+        order: [["createdAt", "DESC"]],
+      });
+    } else if (loggedUser.type === "directeur") {
+
+    /* ======================================================
+       🟩 DIRECTEUR → messages de SON établissement
+       ====================================================== */
+      // On récupère tous les messages d'abord
+      let allMessages = await Message.findAll({
+        include: [
+          {
+            model: User,
+            as: "expediteur",
+            attributes: [
+              "id",
+              "nom",
+              "prenom",
+              "email",
+              "photo",
+              "etablissement",
+            ],
+          },
+          {
+            model: User,
+            as: "destinataires",
+            attributes: [
+              "id",
+              "nom",
+              "prenom",
+              "email",
+              "photo",
+              "etablissement",
+            ],
+            through: { attributes: [] },
+          },
+        ],
+        order: [["createdAt", "DESC"]],
+      });
+
+      // Puis filtrage : garder seulement les messages de SON établissement
+      messages = allMessages.filter((msg) => {
+        const exp = msg.expediteur;
+        const dests = msg.destinataires || [];
+
+        return (
+          exp?.etablissement === loggedUser.etablissement ||
+          dests.some((d) => d.etablissement === loggedUser.etablissement)
+        );
+      });
+    } else {
+      // Aucun autre rôle n'a accès
+      return res.status(403).json({
+        success: false,
+        message: "Accès non autorisé",
+      });
+    }
+
+    // Formatage final
     res.json({
       success: true,
       data: messages.map((msg) => ({
@@ -234,50 +332,90 @@ const getAllMessages = async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error("Erreur getAllMessagesAdmin:", error);
+    console.error("Erreur getAllMessages :", error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
 
+// Fonction utilitaire pour formater la date en français
+const formatDateFR = (date) =>
+  date
+    ? new Date(date).toLocaleString("fr-FR", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "Date inconnue";
+
+// Fonction pour ajouter une date formatée à un message
+const formatMessageDates = (message) => {
+    // S'assurer que le message est un objet simple (pas une instance Sequelize)
+    const formattedMessage = message.toJSON ? message.toJSON() : message;
+
+    // Ajout de la nouvelle propriété formatée
+    formattedMessage.dateEnvoiFormatted = formatDateFR(formattedMessage.dateEnvoi);
+    
+    // Si vous voulez aussi formater l'heure seule pour la bulle (optionnel)
+    formattedMessage.timeEnvoiFormatted = formattedMessage.dateEnvoi
+        ? new Date(formattedMessage.dateEnvoi).toLocaleString("fr-FR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "";
+
+    return formattedMessage;
+}
+
+
 /* ======================================================
-   🔗 CONVERSATION / THREAD
-   ====================================================== */
+    🔗 CONVERSATION / THREAD
+    ====================================================== */
 const getConversation = async (req,res)=>{
-  try{
-    if(!req.user?.id) return res.status(401).json({success:false,message:"Utilisateur non authentifié"});
+    try{
+        if(!req.user?.id) return res.status(401).json({success:false,message:"Utilisateur non authentifié"});
 
-    const threadId = req.params.threadId;
+        const threadId = req.params.threadId;
 
-    const mainMessage = await Message.findByPk(threadId,{
-      include:[
-        {model:User,as:"expediteur",attributes:["id","nom","prenom","email","photo"]},
-        {model:User,as:"destinataires",attributes:["id","nom","prenom","email","photo"], through:{attributes:[]}},
-      ]
-    });
-    if(!mainMessage) return res.status(404).json({success:false,message:"Message principal non trouvé"});
+        // 1. Récupération du message principal
+        const mainMessage = await Message.findByPk(threadId,{
+            include:[
+                {model:User,as:"expediteur",attributes:["id","nom","prenom","email","photo"]},
+                {model:User,as:"destinataires",attributes:["id","nom","prenom","email","photo"], through:{attributes:[]}},
+            ]
+        });
+        if(!mainMessage) return res.status(404).json({success:false,message:"Message principal non trouvé"});
 
-    const reponses = await Message.findAll({
-      where:{threadId},
-      include:[
-        {model:User,as:"expediteur",attributes:["id","nom","prenom","email","photo"]},
-        {model:User,as:"destinataires",attributes:["id","nom","prenom","email","photo"], through:{attributes:[]}},
-      ],
-      order:[["dateEnvoi","ASC"]],
-    });
+        // 2. Récupération des réponses
+        const reponses = await Message.findAll({
+            where:{threadId},
+            include:[
+                {model:User,as:"expediteur",attributes:["id","nom","prenom","email","photo"]},
+                {model:User,as:"destinataires",attributes:["id","nom","prenom","email","photo"], through:{attributes:[]}},
+            ],
+            order:[["dateEnvoi","ASC"]],
+        });
 
-    res.json({
-      success:true,
-      data:{
-        mainMessage:mainMessage.toJSON(),
-        reponses:reponses.map(r=>r.toJSON()),
-        conversation:[mainMessage.toJSON(),...reponses.map(r=>r.toJSON())]
-      }
-    });
-  }catch(error){
-    console.error("Erreur getConversation:",error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
-  }
+        // 3. Formatage des dates pour chaque message
+        const formattedMainMessage = formatMessageDates(mainMessage);
+        const formattedReponses = reponses.map(formatMessageDates);
+
+        // 4. Envoi de la réponse formatée
+        res.json({
+            success:true,
+            data:{
+                mainMessage: formattedMainMessage,
+                reponses: formattedReponses,
+                conversation: [formattedMainMessage, ...formattedReponses]
+            }
+        });
+      console.log(mainMessage.dateEnvoi);
+    }catch(error){
+        console.error("Erreur getConversation:",error);
+        res.status(500).json({success:false,message:"Erreur serveur"});
+    }
 };
 
 

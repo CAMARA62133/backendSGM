@@ -29,7 +29,7 @@ router.post("/", upload.single("file"), createUser);
 
 // 🔹 Récupérer la liste de tous les utilisateurs
 // GET /api/users/
-router.get("/", getAllUsers);
+router.get("/", requireAuth, getAllUsers);
 
 // 🔹 Récupérer les informations de l'utilisateur connecté
 // GET /api/users/me
