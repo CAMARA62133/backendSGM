@@ -56,6 +56,10 @@ const User = sequelize.define(
       type: DataTypes.STRING,
       allowNull: false,
     },
+    doitChangerPassword: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
   },
   {
     timestamps: true,

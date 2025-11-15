@@ -1,7 +1,8 @@
 import fs from "fs";
 import XLSX from "xlsx";
-import bcrypt from "bcrypt";
-import User from "../models/User.js"; 
+import crypto from "crypto";
+import User from "../models/User.js";
+import { sendEmail } from "../utils/email.js"; // ton utilitaire d'envoi d'email
 
 /**
  * ==============================
@@ -15,7 +16,6 @@ export const createUser = async (req, res) => {
       nom,
       prenom,
       email,
-      password,
       telephone,
       adresse,
       pays,
@@ -29,50 +29,62 @@ export const createUser = async (req, res) => {
       !nom ||
       !prenom ||
       !email ||
-      !password ||
       !pays ||
       !region ||
       !etablissement
     ) {
-      return res
-        .status(400)
-        .json({ message: "Veuillez remplir tous les champs obligatoires." });
+      return res.status(400).json({
+        message: "Veuillez remplir tous les champs obligatoires.",
+      });
     }
 
     // Vérifier si l'email existe déjà
     const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
-      return res
-        .status(400)
-        .json({
-          message: "Cet email est déjà utilisé par un autre utilisateur.",
-        });
+      return res.status(400).json({ message: "Cet email est déjà utilisé." });
     }
 
-    // Création de l'utilisateur
+    // Génération d'un mot de passe temporaire (8 caractères)
+    const tempPassword = crypto.randomBytes(4).toString("hex");
+
+    // Création de l'utilisateur avec le mot de passe temporaire
     const user = await User.create({
       type,
       nom,
       prenom,
       email,
-      password,
+      password: tempPassword, // mot de passe temporaire
       telephone,
       adresse,
       pays,
       region,
       etablissement,
       photo: req.file ? "/uploads/photos/" + req.file.filename : null,
+      doitChangerPassword: true, // ⚡ obliger l'utilisateur à changer le mot de passe
     });
+    // Générer le lien de changement de mot de passe
+    const resetLink = `${process.env.FRONTEND_URL}/change-password?userId=${user.id}`;
+    // Envoyer l'email avec le mot de passe temporaire et le lien
+    sendEmail(
+      user.email,
+      "Compte créé ✅",
+      `<p>Bonjour ${user.prenom},</p>
+       <p>Votre compte a été créé avec succès.</p>
+       <p>Email: ${user.email}<br>Mot de passe temporaire: <strong>${tempPassword}</strong></p>
+       <p>Veuillez <a href="${resetLink}">cliquer ici</a> pour définir votre nouveau mot de passe.</p>`
+    );
 
     res.status(201).json({
-      message: "✅ Utilisateur créé avec succès.",
-      user,
+      message:
+        "Utilisateur créé avec succès. Un email a été envoyé avec vos identifiants.",
+      user: { id: user.id, email: user.email, prenom: user.prenom },
     });
   } catch (err) {
-    console.error("❌ Erreur createUser :", err);
+    console.error("Erreur createUser :", err);
     res.status(500).json({ message: err.message });
   }
 };
+
 
 
 /**
@@ -85,7 +97,7 @@ export const updateUser = async (req, res) => {
     const user = await User.findByPk(req.params.id);
     if (!user)
       return res.status(404).json({ message: "Utilisateur non trouvé." });
-
+ 
     const {
       nom,
       prenom,
@@ -206,29 +218,55 @@ export const deleteUser = async (req, res) => {
 
 /**
  * ==============================
- * RESET PASSWORD
+ * CHANGE / RESET PASSWORD (pré-save)
  * ==============================
+ * 
+ * Gestion du changement de mot de passe :
+ * - Cas mot de passe temporaire : doitChangerPassword = true
+ * - Cas mot de passe oublié : vérification email
  */
-export const resetPassword = async (req, res) => {
+// POST /api/users/change-password
+export const changePassword = async (req, res) => {
   try {
-    const { email, newPassword } = req.body;
-    if (!newPassword)
+    const { userId, email, newPassword } = req.body;
+
+    if (!newPassword) {
       return res
         .status(400)
         .json({ message: "Veuillez fournir un nouveau mot de passe." });
+    }
 
-    const user = await User.findOne({ where: { email } });
-    if (!user) return res.status(404).json({ message: "Email non trouvé." });
+    let user;
 
-    user.password = await bcrypt.hash(newPassword, 10);
+    if (userId) {
+      // Cas mot de passe temporaire (création compte)
+      user = await User.findByPk(userId);
+      if (!user) return res.status(404).json({ message: "Utilisateur non trouvé." });
+    } else if (email) {
+      // Cas mot de passe oublié
+      user = await User.findOne({ where: { email } });
+      if (!user) return res.status(404).json({ message: "Email non trouvé." });
+    } else {
+      return res
+        .status(400)
+        .json({ message: "Aucun identifiant fourni pour changer le mot de passe." });
+    }
+
+    // Pré-save : stocker le mot de passe tel quel (pas de hash)
+    user.password = newPassword;
+
+    // Si c’était un mot de passe temporaire, on le marque comme changé
+    if (user.doitChangerPassword) user.doitChangerPassword = false;
+
     await user.save();
 
-    res.status(200).json({ message: "Mot de passe réinitialisé avec succès." });
+    res.status(200).json({ message: "Mot de passe mis à jour avec succès." });
   } catch (err) {
-    console.error("❌ Erreur resetPassword :", err);
+    console.error("Erreur changePassword :", err);
     res.status(500).json({ message: err.message });
   }
 };
+
 
 /**
  * ==============================
@@ -244,44 +282,64 @@ export const importUsers = async (req, res) => {
     const sheetName = workbook.SheetNames[0];
     const sheet = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
 
-    const users = [];
+    const usersToCreate = [];
+    const emailsSent = [];
 
-for (const row of sheet) {
-  if (
-    !row.nom ||
-    !row.prenom ||
-    !row.password ||
-    !row.pays ||
-    !row.region ||
-    !row.etablissement
-  )
-    continue;
+    for (const row of sheet) {
+      if (
+        !row.nom ||
+        !row.prenom ||
+        !row.pays ||
+        !row.region ||
+        !row.etablissement
+      )
+        continue;
 
-  users.push({
-    type: row.type || "user",
-    nom: row.nom,
-    prenom: row.prenom,
-    email: row.email, // <-- IMPORTANT
-    password: await bcrypt.hash(row.password, 10),
-    telephone: row.telephone || "",
-    adresse: row.adresse || "",
-    pays: row.pays,
-    region: row.region,
-    etablissement: row.etablissement,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  });
-}
+      // 🔹 Générer mot de passe temporaire
+      const tempPassword = crypto.randomBytes(4).toString("hex"); // 8 caractères
 
-
-    await User.bulkCreate(users);
-
-    res
-      .status(201)
-      .json({
-        message: `${users.length} utilisateurs importés avec succès.`,
-        count: users.length,
+      usersToCreate.push({
+        type: row.type || "user",
+        nom: row.nom,
+        prenom: row.prenom,
+        email: row.email, // important
+        password: tempPassword, // stocker en clair pour pré-save (si c'est ton choix)
+        doitChangerPassword: true, // ⚡ forcer changement du mot de passe
+        telephone: row.telephone || "",
+        adresse: row.adresse || "",
+        pays: row.pays,
+        region: row.region,
+        etablissement: row.etablissement,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       });
+
+      emailsSent.push({ email: row.email, prenom: row.prenom, tempPassword });
+    }
+
+    // 🔹 Création en bulk
+    const createdUsers = await User.bulkCreate(usersToCreate);
+
+    // 🔹 Envoyer les emails avec lien de changement de mot de passe
+    for (let i = 0; i < createdUsers.length; i++) {
+      const user = createdUsers[i];
+      const { tempPassword } = emailsSent[i];
+      const resetLink = `${process.env.FRONTEND_URL}/change-password?userId=${user.id}`;
+
+      sendEmail(
+        user.email,
+        "Compte créé ✅",
+        `<p>Bonjour ${user.prenom},</p>
+         <p>Votre compte a été créé avec succès.</p>
+         <p>Email: ${user.email}<br>Mot de passe temporaire: <strong>${tempPassword}</strong></p>
+         <p>Veuillez <a href="${resetLink}">cliquer ici</a> pour définir votre nouveau mot de passe.</p>`
+      );
+    }
+
+    res.status(201).json({
+      message: `${createdUsers.length} utilisateurs importés avec succès.`,
+      count: createdUsers.length,
+    });
   } catch (err) {
     console.error("❌ Erreur importUsers :", err);
     res
@@ -289,3 +347,4 @@ for (const row of sheet) {
       .json({ message: "Erreur lors de l'importation des utilisateurs." });
   }
 };
+

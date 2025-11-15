@@ -6,12 +6,12 @@
  * Auteur : Camara Karifa
  * Date : 2025
  */
-import Message from "../models/Message.js";
+import { Message, PieceJointe } from "../models/Message.js";
 import User from "../models/User.js";
 import { Op } from "sequelize";
-/* ======================================================
-   🧩 FONCTIONS UTILITAIRES
-   ====================================================== */
+import { sendEmail } from "../utils/email.js";
+
+// Convertir emails en IDs
 const convertirEmailsEnIds = async (emails) => {
   if (!Array.isArray(emails)) {
     if (typeof emails === "string") {
@@ -28,15 +28,15 @@ const convertirEmailsEnIds = async (emails) => {
 
   const ids = users.map((u) => u.id);
   const emailsInvalides = emails.filter(
-    (email) => !users.some((user) => user.email === email)
+    (e) => !users.some((u) => u.email === e)
   );
 
-  return { ids, emailsInvalides, users };
+  return { ids, emailsInvalides };
 };
 
-/* ======================================================
-   📨 ENVOI DE MESSAGE
-   ====================================================== */
+// -----------------------------
+// 📨 ENVOYER MESSAGE
+// -----------------------------
 const envoyerMessage = async (req, res) => {
   try {
     const {
@@ -44,12 +44,14 @@ const envoyerMessage = async (req, res) => {
       contenu,
       destinataires,
       estBrouillon = false,
-      threadId = null,
-      mode = "new",
+      threadId,
+      mode,
     } = req.body;
 
+    // Convertir emails en IDs utilisateurs
     const { ids: idsDestinataires, emailsInvalides } =
       await convertirEmailsEnIds(destinataires);
+
     if (emailsInvalides.length > 0) {
       return res.status(400).json({
         success: false,
@@ -58,29 +60,136 @@ const envoyerMessage = async (req, res) => {
       });
     }
 
-    const piecesJointes =
-      req.files?.map((file) => ({
-        nom: file.originalname,
-        chemin: file.path,
-        typeMime: file.mimetype,
-        taille: file.size,
-      })) || [];
-
+    // Créer le message
     const messageCree = await Message.create({
       sujet,
       contenu,
       expediteurId: req.user.id,
-      threadId: mode === "reply" || mode === "forward" ? threadId : null,
+      threadId: mode !== "new" ? threadId : null,
       estBrouillon,
-      piecesJointes,
     });
-    // Ajouter la dateEnvoi seulement si ce n'est pas un brouillon
+
     if (!estBrouillon) {
-      messageData.dateEnvoi = new Date();
+      messageCree.dateEnvoi = new Date();
+      await messageCree.save();
     }
+
     await messageCree.setDestinataires(idsDestinataires);
 
+    // Gérer les pièces jointes
+    if (req.files?.length > 0) {
+      const pieces = req.files.map((file) => ({
+        nom: file.originalname,
+        chemin: file.path,
+        typeMime: file.mimetype,
+        taille: file.size,
+        messageId: messageCree.id,
+      }));
+
+      await PieceJointe.bulkCreate(pieces);
+    }
+
     const messageAvecRelations = await Message.findByPk(messageCree.id, {
+      include: [
+        { model: User, as: "expediteur" },
+        { model: User, as: "destinataires" },
+        { model: PieceJointe, as: "piecesJointes" },
+      ],
+    });
+    // 🔹 Envoyer une copie au propre expéditeur
+    const expediteur = await User.findByPk(req.user.id);
+
+    if (expediteur) {
+      sendEmail(
+        expediteur.email,
+        `Copie de votre message: ${sujet}`,
+        `<p>Bonjour ${expediteur.prenom},</p>
+         <p>Voici une copie du message que vous avez envoyé.</p>
+         <p><strong>Sujet:</strong> ${sujet}</p>
+         <p><strong>Contenu:</strong><br>${contenu}</p>
+         <a href="${process.env.FRONTEND_URL}/messages/${messageCree.id}">Voir le message dans l'application</a>`
+      );
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: estBrouillon
+        ? "Brouillon sauvegardé"
+        : "Message envoyé avec succès",
+      data: messageAvecRelations,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+};
+
+
+/* ======================================================
+   📥 MESSAGES REÇUS, ENVOYÉS, BROUILLONS
+   ====================================================== */
+const getMessagesRecus = async (req, res) => {
+  try {
+    if (!req.user?.id)
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
+
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const archive = req.query.archive === "true";
+
+    const { rows: messages, count: total } = await Message.findAndCountAll({
+      include: [
+        {
+          model: User,
+          as: "expediteur",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+        },
+        {
+          model: User,
+          as: "destinataires",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+          where: { id: req.user.id },
+          required: true,
+          through: { attributes: [] },
+        },
+      ],
+      where: { estSupprime: false, estArchive: archive },
+      order: [["dateEnvoi", "DESC"]],
+      limit,
+      offset: (page - 1) * limit,
+      distinct: true,
+    });
+
+    res.json({
+      success: true,
+      data: messages.map((m) => ({
+        ...m.toJSON(),
+        destinataires: m.destinataires || [],
+        piecesJointes: m.piecesJointes || [],
+        expediteur: m.expediteur || null,
+      })),
+      pagination: { page, pages: Math.ceil(total / limit), total },
+    });
+  } catch (error) {
+    console.error("Erreur getMessagesRecus:", error);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+};
+
+const getMessagesEnvoyes = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+
+    const { rows: messages, count: total } = await Message.findAndCountAll({
+      where: {
+        expediteurId: req.user.id,
+        estBrouillon: false,
+        estSupprime: false,
+        estArchive: false,
+      },
       include: [
         {
           model: User,
@@ -91,129 +200,117 @@ const envoyerMessage = async (req, res) => {
           model: User,
           as: "destinataires",
           attributes: ["nom", "prenom", "email", "photo"],
+          through: { attributes: [] },
         },
       ],
+      order: [["dateEnvoi", "DESC"]],
+      limit,
+      offset: (page - 1) * limit,
     });
-    res.status(201).json({
+
+    res.json({
       success: true,
-      message: estBrouillon
-        ? "Brouillon sauvegardé"
-        : "Message envoyé avec succès",
-      data: messageAvecRelations,
+      data: messages.map((m) => ({
+        ...m.toJSON(),
+        destinataires: m.destinataires || [],
+        piecesJointes: m.piecesJointes || [],
+        expediteur: m.expediteur || null,
+      })),
+      pagination: { page, pages: Math.ceil(total / limit), total },
     });
   } catch (error) {
-    console.error("Erreur envoyerMessage:", error);
+    console.error(error);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
-/* ======================================================
-   📥 MESSAGES REÇUS, ENVOYÉS, BROUILLONS
-   ====================================================== */
-const getMessagesRecus = async (req, res) => {
+const getBrouillons = async (req, res) => {
   try {
-    if (!req.user?.id) return res.status(401).json({ success:false, message:"Utilisateur non authentifié" });
+    if (!req.user?.id)
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
 
-    const page = parseInt(req.query.page)||1;
-    const limit = parseInt(req.query.limit)||20;
-    const archive = req.query.archive === "true";
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
 
     const { rows: messages, count: total } = await Message.findAndCountAll({
+      where: {
+        expediteurId: req.user.id,
+        estBrouillon: true,
+        estSupprime: false,
+      },
       include: [
-        { model: User, as: "expediteur", attributes:["id","nom","prenom","email","photo"] },
-        { model: User, as: "destinataires", attributes:["id","nom","prenom","email","photo"], where:{id:req.user.id}, required:true, through:{attributes:[]}},
+        {
+          model: User,
+          as: "destinataires",
+          attributes: ["id", "nom", "prenom", "email"],
+          through: { attributes: [] },
+        },
       ],
-      where:{ estSupprime:false, estArchive:archive },
-      order:[["dateEnvoi","DESC"]],
+      order: [["dateEnvoi", "DESC"]],
       limit,
-      offset:(page-1)*limit,
-      distinct:true,
+      offset: (page - 1) * limit,
+      distinct: true,
     });
 
     res.json({
-      success:true,
-      data: messages.map(m=>({...m.toJSON(), destinataires:m.destinataires||[], piecesJointes:m.piecesJointes||[], expediteur:m.expediteur||null})),
-      pagination:{page, pages:Math.ceil(total/limit), total},
+      success: true,
+      data: messages.map((m) => ({
+        ...m.toJSON(),
+        destinataires: m.destinataires || [],
+        piecesJointes: m.piecesJointes || [],
+      })),
+      pagination: { page, pages: Math.ceil(total / limit), total },
     });
   } catch (error) {
-    console.error("Erreur getMessagesRecus:", error);
-    res.status(500).json({ success:false, message:"Erreur serveur" });
-  }
-};
-
-const getMessagesEnvoyes = async (req,res)=>{
-  try {
-    const page = parseInt(req.query.page)||1;
-    const limit = parseInt(req.query.limit)||20;
-
-    const { rows: messages, count: total } = await Message.findAndCountAll({
-      where:{ expediteurId:req.user.id, estBrouillon:false, estSupprime:false, estArchive:false },
-      include:[
-        { model: User, as:"expediteur", attributes:["nom","prenom","email","photo"] },
-        { model: User, as:"destinataires", attributes:["nom","prenom","email","photo"], through:{attributes:[]} },
-      ],
-      order:[["dateEnvoi","DESC"]],
-      limit,
-      offset:(page-1)*limit,
-    });
-
-    res.json({
-      success:true,
-      data: messages.map(m=>({...m.toJSON(), destinataires:m.destinataires||[], piecesJointes:m.piecesJointes||[], expediteur:m.expediteur||null})),
-      pagination:{page, pages:Math.ceil(total/limit), total},
-    });
-  } catch(error){
-    console.error(error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
-  }
-};
-
-const getBrouillons = async (req,res)=>{
-  try{
-    if(!req.user?.id) return res.status(401).json({success:false,message:"Utilisateur non authentifié"});
-
-    const page = parseInt(req.query.page)||1;
-    const limit = parseInt(req.query.limit)||20;
-
-    const { rows: messages, count: total } = await Message.findAndCountAll({
-      where:{ expediteurId:req.user.id, estBrouillon:true, estSupprime:false },
-      include:[{ model: User, as:"destinataires", attributes:["id","nom","prenom","email"], through:{attributes:[]} }],
-      order:[["dateEnvoi","DESC"]],
-      limit,
-      offset:(page-1)*limit,
-      distinct:true,
-    });
-
-    res.json({
-      success:true,
-      data: messages.map(m=>({...m.toJSON(), destinataires:m.destinataires||[], piecesJointes:m.piecesJointes||[]})),
-      pagination:{page, pages:Math.ceil(total/limit), total},
-    });
-  } catch(error){
-    res.status(500).json({success:false,message:"Erreur serveur"});
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
 /* ======================================================
    🔎 DÉTAIL D'UN MESSAGE
    ====================================================== */
-const getMessage = async (req,res)=>{
-  try{
-    if(!req.user?.id) return res.status(401).json({success:false,message:"Utilisateur non authentifié"});
+const getMessage = async (req, res) => {
+  try {
+    if (!req.user?.id)
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
 
-    const message = await Message.findByPk(req.params.id,{
-      include:[
-        {model:User,as:"expediteur",attributes:["id","nom","prenom","email","photo"]},
-        {model:User,as:"destinataires",attributes:["id","nom","prenom","email","photo"], through:{attributes:[]}},
-      ]
+    const message = await Message.findByPk(req.params.id, {
+      include: [
+        {
+          model: User,
+          as: "expediteur",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+        },
+        {
+          model: User,
+          as: "destinataires",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+          through: { attributes: [] },
+        },
+      ],
     });
 
-    if(!message) return res.status(404).json({success:false,message:"Message non trouvé"});
+    if (!message)
+      return res
+        .status(404)
+        .json({ success: false, message: "Message non trouvé" });
 
-    res.json({success:true,data:{...message.toJSON(), destinataires:message.destinataires||[], piecesJointes:message.piecesJointes||[], expediteur:message.expediteur||null}});
-  }catch(error){
-    console.error("Erreur getMessage:",error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
+    res.json({
+      success: true,
+      data: {
+        ...message.toJSON(),
+        destinataires: message.destinataires || [],
+        piecesJointes: message.piecesJointes || [],
+        expediteur: message.expediteur || null,
+      },
+    });
+  } catch (error) {
+    console.error("Erreur getMessage:", error);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 /* ======================================================
@@ -235,7 +332,7 @@ const getAllMessages = async (req, res) => {
     /* ======================================================
        🟦 ADMIN → voit tous les messages
        ====================================================== */
-    if (loggedUser.type === "admin" ) {
+    if (loggedUser.type === "admin") {
       messages = await Message.findAll({
         include: [
           {
@@ -267,8 +364,7 @@ const getAllMessages = async (req, res) => {
         order: [["createdAt", "DESC"]],
       });
     } else if (loggedUser.type === "directeur") {
-
-    /* ======================================================
+      /* ======================================================
        🟩 DIRECTEUR → messages de SON établissement
        ====================================================== */
       // On récupère tous les messages d'abord
@@ -337,7 +433,6 @@ const getAllMessages = async (req, res) => {
   }
 };
 
-
 // Fonction utilitaire pour formater la date en français
 const formatDateFR = (date) =>
   date
@@ -352,72 +447,141 @@ const formatDateFR = (date) =>
 
 // Fonction pour ajouter une date formatée à un message
 const formatMessageDates = (message) => {
-    // S'assurer que le message est un objet simple (pas une instance Sequelize)
-    const formattedMessage = message.toJSON ? message.toJSON() : message;
+  // S'assurer que le message est un objet simple (pas une instance Sequelize)
+  const formattedMessage = message.toJSON ? message.toJSON() : message;
 
-    // Ajout de la nouvelle propriété formatée
-    formattedMessage.dateEnvoiFormatted = formatDateFR(formattedMessage.dateEnvoi);
-    
-    // Si vous voulez aussi formater l'heure seule pour la bulle (optionnel)
-    formattedMessage.timeEnvoiFormatted = formattedMessage.dateEnvoi
-        ? new Date(formattedMessage.dateEnvoi).toLocaleString("fr-FR", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })
-        : "";
+  // Ajout de la nouvelle propriété formatée
+  formattedMessage.dateEnvoiFormatted = formatDateFR(
+    formattedMessage.dateEnvoi
+  );
 
-    return formattedMessage;
-}
+  // Si vous voulez aussi formater l'heure seule pour la bulle (optionnel)
+  formattedMessage.timeEnvoiFormatted = formattedMessage.dateEnvoi
+    ? new Date(formattedMessage.dateEnvoi).toLocaleString("fr-FR", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "";
 
-
-/* ======================================================
-    🔗 CONVERSATION / THREAD
-    ====================================================== */
-const getConversation = async (req,res)=>{
-    try{
-        if(!req.user?.id) return res.status(401).json({success:false,message:"Utilisateur non authentifié"});
-
-        const threadId = req.params.threadId;
-
-        // 1. Récupération du message principal
-        const mainMessage = await Message.findByPk(threadId,{
-            include:[
-                {model:User,as:"expediteur",attributes:["id","nom","prenom","email","photo"]},
-                {model:User,as:"destinataires",attributes:["id","nom","prenom","email","photo"], through:{attributes:[]}},
-            ]
-        });
-        if(!mainMessage) return res.status(404).json({success:false,message:"Message principal non trouvé"});
-
-        // 2. Récupération des réponses
-        const reponses = await Message.findAll({
-            where:{threadId},
-            include:[
-                {model:User,as:"expediteur",attributes:["id","nom","prenom","email","photo"]},
-                {model:User,as:"destinataires",attributes:["id","nom","prenom","email","photo"], through:{attributes:[]}},
-            ],
-            order:[["dateEnvoi","ASC"]],
-        });
-
-        // 3. Formatage des dates pour chaque message
-        const formattedMainMessage = formatMessageDates(mainMessage);
-        const formattedReponses = reponses.map(formatMessageDates);
-
-        // 4. Envoi de la réponse formatée
-        res.json({
-            success:true,
-            data:{
-                mainMessage: formattedMainMessage,
-                reponses: formattedReponses,
-                conversation: [formattedMainMessage, ...formattedReponses]
-            }
-        });
-      console.log(mainMessage.dateEnvoi);
-    }catch(error){
-        console.error("Erreur getConversation:",error);
-        res.status(500).json({success:false,message:"Erreur serveur"});
-    }
+  return formattedMessage;
 };
 
+/* ======================================================
+    🔗 CONVERSATION / THREAD (final + format dates + PJ)
+   ====================================================== */
+
+const getConversation = async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    const threadId = req.params.threadId;
+    const BASE_URL = process.env.BASE_URL;
+
+    /* ------------------------------------------------------
+       1️⃣ Récupération du message principal
+    --------------------------------------------------------- */
+    const mainMessage = await Message.findByPk(threadId, {
+      include: [
+        {
+          model: User,
+          as: "expediteur",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+        },
+        {
+          model: User,
+          as: "destinataires",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+          through: { attributes: [] },
+        },
+        { model: PieceJointe, as: "piecesJointes" },
+      ],
+    });
+
+    if (!mainMessage) {
+      return res.status(404).json({
+        success: false,
+        message: "Message principal non trouvé",
+      });
+    }
+
+    /* ------------------------------------------------------
+       🔧 Fonction formatage des PJ
+    --------------------------------------------------------- */
+    const formatPiecesJointes = (pieces) => {
+      if (!pieces) return [];
+      return pieces.map((pj) => ({
+        ...pj.dataValues,
+        // 1️⃣ remplacer backslashes par slash
+        // 2️⃣ enlever 'public/uploads/' du chemin, car Express sert /uploads
+        chemin: `${BASE_URL}/uploads/${pj.chemin
+          .replace(/^public[\\/](uploads[\\/])?/, "")
+          .replace(/\\/g, "/")}`,
+      }));
+    };
+
+    /* ------------------------------------------------------
+       🔧 Appliquer format PJ + dates au message principal
+    --------------------------------------------------------- */
+    const formattedMainMessage = formatMessageDates(mainMessage.toJSON());
+    formattedMainMessage.piecesJointes = formatPiecesJointes(
+      mainMessage.piecesJointes
+    );
+
+    /* ------------------------------------------------------
+       2️⃣ Récupération des réponses du thread
+    --------------------------------------------------------- */
+    const reponses = await Message.findAll({
+      where: { threadId },
+      include: [
+        {
+          model: User,
+          as: "expediteur",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+        },
+        {
+          model: User,
+          as: "destinataires",
+          attributes: ["id", "nom", "prenom", "email", "photo"],
+          through: { attributes: [] },
+        },
+        { model: PieceJointe, as: "piecesJointes" },
+      ],
+      order: [["dateEnvoi", "ASC"]],
+    });
+
+    /* ------------------------------------------------------
+       🔧 Formatage dates + PJ pour chaque réponse
+    --------------------------------------------------------- */
+    const formattedReponses = reponses.map((msg) => {
+      const m = formatMessageDates(msg.toJSON());
+      m.piecesJointes = formatPiecesJointes(msg.piecesJointes);
+      return m;
+    });
+
+    /* ------------------------------------------------------
+       3️⃣ Envoi final
+    --------------------------------------------------------- */
+    return res.json({
+      success: true,
+      data: {
+        mainMessage: formattedMainMessage,
+        reponses: formattedReponses,
+        conversation: [formattedMainMessage, ...formattedReponses],
+      },
+    });
+  } catch (error) {
+    console.error("Erreur getConversation:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
+  }
+};
 
 /* ======================================================
    🗂️ GESTION CORBEILLE & FAVORIS & ARCHIVES
@@ -425,77 +589,102 @@ const getConversation = async (req,res)=>{
 /* ======================================================
    🗂️ CORBEILLE / FAVORIS / ARCHIVES / SUPPRESSION
    ====================================================== */
-const marquerCommeLu = async (req,res)=>{
-  try{
-    const message = await Message.findByPk(req.params.id,{include:[{model:User,as:"destinataires"}]});
-    if(!message || !message.destinataires.some(d=>d.id===req.user.id)) return res.status(404).json({success:false,message:"Message non trouvé"});
+const marquerCommeLu = async (req, res) => {
+  try {
+    const message = await Message.findByPk(req.params.id, {
+      include: [{ model: User, as: "destinataires" }],
+    });
+    if (!message || !message.destinataires.some((d) => d.id === req.user.id))
+      return res
+        .status(404)
+        .json({ success: false, message: "Message non trouvé" });
 
     message.estLu = true;
     await message.save();
 
-    res.json({success:true,message:"Message marqué comme lu"});
-  }catch(error){
+    res.json({ success: true, message: "Message marqué comme lu" });
+  } catch (error) {
     console.error(error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
-const toggleArchiveMessage = async (req,res)=>{
-  try{
+const toggleArchiveMessage = async (req, res) => {
+  try {
     const message = await Message.findByPk(req.params.id);
-    if(!message) return res.status(404).json({success:false,message:"Message non trouvé"});
+    if (!message)
+      return res
+        .status(404)
+        .json({ success: false, message: "Message non trouvé" });
 
     message.estArchive = !message.estArchive;
     await message.save();
-    res.json({success:true,message:message.estArchive?"Message archivé":"Message désarchivé"});
-  }catch(error){
+    res.json({
+      success: true,
+      message: message.estArchive ? "Message archivé" : "Message désarchivé",
+    });
+  } catch (error) {
     console.error(error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
-const toggleFavori = async (req,res)=>{
-  try{
+const toggleFavori = async (req, res) => {
+  try {
     const message = await Message.findByPk(req.params.id);
-    if(!message) return res.status(404).json({success:false,message:"Message non trouvé"});
+    if (!message)
+      return res
+        .status(404)
+        .json({ success: false, message: "Message non trouvé" });
 
     message.estFavori = !message.estFavori;
     await message.save();
 
-    res.json({success:true,message:message.estFavori?"Message ajouté aux favoris":"Message retiré des favoris"});
-  }catch(error){
+    res.json({
+      success: true,
+      message: message.estFavori
+        ? "Message ajouté aux favoris"
+        : "Message retiré des favoris",
+    });
+  } catch (error) {
     console.error(error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
-const supprimerMessage = async (req,res)=>{
-  try{
+const supprimerMessage = async (req, res) => {
+  try {
     const message = await Message.findByPk(req.params.id);
-    if(!message) return res.status(404).json({success:false,message:"Message non trouvé"});
+    if (!message)
+      return res
+        .status(404)
+        .json({ success: false, message: "Message non trouvé" });
 
     message.estSupprime = true;
     await message.save();
 
-    res.json({success:true,message:"Message déplacé vers la corbeille"});
-  }catch(error){
+    res.json({ success: true, message: "Message déplacé vers la corbeille" });
+  } catch (error) {
     console.error(error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
-const restaurerMessage = async (req,res)=>{
-  try{
+const restaurerMessage = async (req, res) => {
+  try {
     const message = await Message.findByPk(req.params.id);
-    if(!message) return res.status(404).json({success:false,message:"Message non trouvé"});
+    if (!message)
+      return res
+        .status(404)
+        .json({ success: false, message: "Message non trouvé" });
 
     message.estSupprime = false;
     await message.save();
 
-    res.json({success:true,message:"Message restauré"});
-  }catch(error){
+    res.json({ success: true, message: "Message restauré" });
+  } catch (error) {
     console.error(error);
-    res.status(500).json({success:false,message:"Erreur serveur"});
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
@@ -551,7 +740,9 @@ const viderCorbeille = async (req, res) => {
 const nombreMessagesNonLus = async (req, res) => {
   try {
     if (!req.user?.id) {
-      return res.status(401).json({ success: false, message: "Utilisateur non authentifié" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
     }
 
     const count = await Message.count({
@@ -577,7 +768,9 @@ const nombreMessagesNonLus = async (req, res) => {
 const nombreBrouillons = async (req, res) => {
   try {
     if (!req.user?.id) {
-      return res.status(401).json({ success: false, message: "Utilisateur non authentifié" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
     }
 
     const count = await Message.count({
@@ -598,7 +791,9 @@ const nombreBrouillons = async (req, res) => {
 const nombreMessagesArchives = async (req, res) => {
   try {
     if (!req.user?.id) {
-      return res.status(401).json({ success: false, message: "Utilisateur non authentifié" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
     }
 
     const count = await Message.count({
@@ -624,7 +819,9 @@ const nombreMessagesArchives = async (req, res) => {
 const nombreMessagesCorbeille = async (req, res) => {
   try {
     if (!req.user?.id) {
-      return res.status(401).json({ success: false, message: "Utilisateur non authentifié" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
     }
 
     // Ici, on compte tous les messages supprimés liés à l'utilisateur
@@ -651,7 +848,9 @@ const nombreMessagesCorbeille = async (req, res) => {
 const nombreMessagesFavoris = async (req, res) => {
   try {
     if (!req.user?.id) {
-      return res.status(401).json({ success: false, message: "Utilisateur non authentifié" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Utilisateur non authentifié" });
     }
 
     const count = await Message.count({
@@ -868,4 +1067,3 @@ export {
   nombreMessagesCorbeille,
   nombreMessagesFavoris,
 };
-

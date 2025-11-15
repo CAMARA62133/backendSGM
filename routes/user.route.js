@@ -9,8 +9,8 @@ import {
   getUserById,
   updateUser,
   deleteUser,
-  resetPassword,
   importUsers,
+  changePassword,
 } from "../controllers/userControllers.js"; // contrôleurs des utilisateurs
 import upload from "../middlewares/uploads.js"; // middleware pour gérer les fichiers uploadés
 import { getCurrentUser } from "../controllers/authControllers.js"; // récupère l'utilisateur connecté
@@ -52,7 +52,7 @@ router.delete("/:id", deleteUser);
 
 // 🔹 Réinitialiser le mot de passe d'un utilisateur
 // POST /api/users/reset-password
-router.post("/reset-password", resetPassword);
+router.post("/change-password", changePassword);
 
 // 🔹 Importer des utilisateurs depuis un fichier Excel/CSV
 // POST /api/users/import
