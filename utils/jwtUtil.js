@@ -1,4 +1,5 @@
-const jwt = require("jsonwebtoken");
+import jwt from "jsonwebtoken";
+
 
 // Token longue durée : 3 jours
 const maxAge = 3 * 24 * 60 * 60; // en secondes
@@ -12,4 +13,4 @@ const generateShortToken = (id) => {
   return jwt.sign({ id }, process.env.TOKEN_SECRET, { expiresIn: "15m" });
 };
 
-module.exports = { createToken, generateShortToken, maxAge };
+export{ createToken, generateShortToken, maxAge };

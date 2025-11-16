@@ -1,6 +1,6 @@
 
 
-const nodemailer = require("nodemailer");
+import nodemailer from "nodemailer";
 
 /**
  * Fonction pour envoyer un e-mail
@@ -36,6 +36,6 @@ async function sendEmail(to, subject, html) {
   }
 }
 
-module.exports = {
+export  {
   sendEmail,
 };
