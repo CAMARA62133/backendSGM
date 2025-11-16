@@ -230,42 +230,58 @@ export const changePassword = async (req, res) => {
   try {
     const { userId, email, newPassword } = req.body;
 
+    let user;
+
+    // 1️⃣ Vérification email (étape 1)
+    if (email && !newPassword && !userId) {
+      const existingUser = await User.findOne({ where: { email } });
+      if (!existingUser)
+        return res.status(404).json({ message: "Email non trouvé." });
+
+      return res.status(200).json({
+        message:
+          "Email vérifié. Vous pouvez maintenant changer votre mot de passe.",
+      });
+    }
+
+    // 2️⃣ Cas changement de mot de passe (étape 2)
     if (!newPassword) {
       return res
         .status(400)
         .json({ message: "Veuillez fournir un nouveau mot de passe." });
     }
 
-    let user;
-
     if (userId) {
-      // Cas mot de passe temporaire (création compte)
       user = await User.findByPk(userId);
-      if (!user) return res.status(404).json({ message: "Utilisateur non trouvé." });
+      if (!user)
+        return res.status(404).json({ message: "Utilisateur non trouvé." });
     } else if (email) {
-      // Cas mot de passe oublié
       user = await User.findOne({ where: { email } });
       if (!user) return res.status(404).json({ message: "Email non trouvé." });
     } else {
-      return res
-        .status(400)
-        .json({ message: "Aucun identifiant fourni pour changer le mot de passe." });
+      return res.status(400).json({
+        message: "Aucun identifiant fourni pour changer le mot de passe.",
+      });
     }
 
-    // Pré-save : stocker le mot de passe tel quel (pas de hash)
+    // Mise à jour du mot de passe
     user.password = newPassword;
 
-    // Si c’était un mot de passe temporaire, on le marque comme changé
-    if (user.doitChangerPassword) user.doitChangerPassword = false;
+    if (user.doitChangerPassword) {
+      user.doitChangerPassword = false;
+    }
 
     await user.save();
 
-    res.status(200).json({ message: "Mot de passe mis à jour avec succès." });
+    res.status(200).json({
+      message: "Mot de passe mis à jour avec succès.",
+    });
   } catch (err) {
     console.error("Erreur changePassword :", err);
     res.status(500).json({ message: err.message });
   }
 };
+
 
 
 /**

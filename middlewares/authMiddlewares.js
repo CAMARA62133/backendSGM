@@ -56,21 +56,3 @@ export const requireAdmin = (req, res, next) => {
   if (req.user?.type === "admin") return next();
   return res.status(403).json({ message: "Accès refusé : rôle admin requis" });
 };
-
-/**
- * ==============================
- * CHECK ROLE
- * ==============================
- */
-export const checkRole =
-  (...roles) =>
-  (req, res, next) => {
-    if (!req.user)
-      return res.status(401).json({ message: "Utilisateur non authentifié" });
-
-    if (roles.includes(req.user.type)) return next();
-
-    return res
-      .status(403)
-      .json({ message: "Accès non autorisé : rôle requis" });
-  };
