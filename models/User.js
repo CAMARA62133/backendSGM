@@ -64,6 +64,7 @@ const User = sequelize.define(
   {
     timestamps: true,
     tableName: "users",
+    schema: process.env.DB_SCHEMA, // <--- ajout du schema TRV_TMSG
   }
 );
 

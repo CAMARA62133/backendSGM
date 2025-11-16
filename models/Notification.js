@@ -28,6 +28,7 @@ const Notification = sequelize.define(
   {
     timestamps: false, // createdAt géré manuellement, pas besoin de updatedAt
     tableName: "notifications",
+    schema: process.env.DB_SCHEMA, // <--- ajout du schema TRV_TMSG
   }
 );
 

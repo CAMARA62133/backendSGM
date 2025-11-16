@@ -13,7 +13,11 @@ const PieceJointe = sequelize.define(
     typeMime: { type: DataTypes.STRING },
     taille: { type: DataTypes.INTEGER },
   },
-  { timestamps: false, tableName: "pieces_jointes" }
+  {
+    timestamps: false,
+    tableName: "pieces_jointes",
+    schema: process.env.DB_SCHEMA,
+  }
 );
 
 // ==============================
@@ -34,10 +38,9 @@ const Message = sequelize.define(
       allowNull: true,
       defaultValue: DataTypes.NOW,
     },
-
     dateSuppression: { type: DataTypes.DATE, defaultValue: null },
   },
-  { timestamps: true, tableName: "messages" }
+  { timestamps: true, tableName: "messages", schema: process.env.DB_SCHEMA }
 );
 
 // ==============================
@@ -48,7 +51,7 @@ const Message = sequelize.define(
 Message.belongsTo(User, { as: "expediteur", foreignKey: "expediteurId" });
 User.hasMany(Message, { as: "messagesEnvoyes", foreignKey: "expediteurId" });
 
-// Destinataires : relation N-N (un message peut avoir plusieurs destinataires)
+// Destinataires : relation N-N
 const MessageDestinataire = sequelize.define(
   "MessageDestinataire",
   {
@@ -57,7 +60,11 @@ const MessageDestinataire = sequelize.define(
     archive: { type: DataTypes.BOOLEAN, defaultValue: false },
     supprime: { type: DataTypes.BOOLEAN, defaultValue: false },
   },
-  { timestamps: false, tableName: "messages_destinataires" }
+  {
+    timestamps: false,
+    tableName: "messages_destinataires",
+    schema: process.env.DB_SCHEMA,
+  }
 );
 
 Message.belongsToMany(User, {
