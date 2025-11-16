@@ -4,12 +4,11 @@
 
 import { Sequelize } from "sequelize";
 import dotenv from "dotenv";
-import User from "../models/User.js"; // Assure-toi que le chemin est correct
+import User from "../models/User.js"; // chemin correct vers le modèle
 
-// Charger les variables d'environnement
 dotenv.config({ path: "./config/.env" });
 
-// 🔹 Initialisation de Sequelize avec les variables d’environnement (.env)
+// 🔹 Initialisation de Sequelize
 const sequelize = new Sequelize(
   process.env.DB_NAME,
   process.env.DB_USER,
@@ -20,32 +19,32 @@ const sequelize = new Sequelize(
     dialect: "postgres",
     logging: false,
     define: {
-      schema: process.env.DB_SCHEMA || "public",
+      schema: process.env.DB_SCHEMA || "public", // schema
     },
   }
 );
 
 // ===============================================================
-// 🚀 Fonction de connexion
+// 🚀 Fonction de connexion et setup
 // ===============================================================
 const connectDB = async () => {
   try {
     await sequelize.authenticate();
-    console.log("✅ Connexion PostgreSQL réussie !");
+ 
 
     // Crée le schema si inexistant
     if (process.env.DB_SCHEMA) {
       await sequelize.query(
         `CREATE SCHEMA IF NOT EXISTS "${process.env.DB_SCHEMA}"`
       );
-      console.log(`✅ Schema "${process.env.DB_SCHEMA}" vérifié / créé`);
+      
     }
 
     // ⚡ Synchroniser les modèles AVANT d'utiliser les tables
-    await sequelize.sync({ alter: true });
-    console.log("✅ Tables synchronisées !");
+    await sequelize.sync({ force: false, alter: true });
+ 
 
-    // Créer un admin si inexistant
+    // 🔐 Créer l'admin si inexistant
     const adminEmail = "camarakarifadev@gmail.com";
     const adminExist = await User.findOne({ where: { email: adminEmail } });
 
@@ -55,7 +54,7 @@ const connectDB = async () => {
         nom: "Camara",
         prenom: "Karifa",
         email: adminEmail,
-        password: "Camara@123", // sera hashé automatiquement
+        password: "Camara@123", // hashé automatiquement
         pays: "Guinée",
         region: "Mamou",
         etablissement: "TRV",
@@ -65,7 +64,7 @@ const connectDB = async () => {
       console.log("ℹ️ L'admin existe déjà :", adminExist.email);
     }
   } catch (error) {
-    console.error("❌ Erreur :", error.message);
+    console.error("❌ Erreur :", error);
     process.exit(1);
   }
 };
