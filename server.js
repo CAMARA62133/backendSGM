@@ -1,67 +1,63 @@
+// server.js
 import dotenv from "dotenv";
 dotenv.config({ path: "./config/.env" });
 
 import express from "express";
+import http from "http";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import path from "path";
 
-// Importation des routes
+// Routes
 import userRoutes from "./routes/user.route.js";
 import authRoutes from "./routes/auth.route.js";
 import messageRoutes from "./routes/message.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
+import communicationRoutes from "./routes/comminucation.routes.js";
 
+// DB
 import { connectDB, sequelize } from "./config/db.js";
 
+// Socket
+import { initSocket } from "./utils/socket.js";
+
 const PORT = process.env.PORT || 5000;
-
-// ----------------------
-// 🔹 Création de l'app Express
-// ----------------------
 const app = express();
+const server = http.createServer(app);
 
-// ===============================================================
-// 🧠 Fonction principale de démarrage
-// ===============================================================
+// ---------------- MIDDLEWARES ----------------
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true,
+  })
+);
+app.use(express.json());
+app.use(cookieParser());
+app.use("/uploads", express.static(path.join(process.cwd(), "public/uploads")));
+
+// ---------------- ROUTES ----------------
+app.use("/api/users", userRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/messages", messageRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/communications", communicationRoutes);
+
+// ---------------- INITIALISATION SOCKET.IO ----------------
+export const io = initSocket(server);
+
+// ---------------- DEMARRAGE SERVEUR ----------------
 const startServer = async () => {
   try {
-    // Connexion à la base
     await connectDB();
     await sequelize.sync({ alter: true });
-    console.log("📦 Modèles synchronisés avec la base PostgreSQL");
+    console.log("Modèles synchronisés avec PostgreSQL");
 
-    // CORS
-    const allowedOrigin = process.env.FRONTEND_URL || "http://localhost:5173";
-    app.use(
-      cors({
-        origin: allowedOrigin,
-        credentials: true,
-        methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-      })
-    );
-
-    app.use(express.json());
-    app.use(cookieParser());
-
-    // Dossier uploads
-    app.use(
-      "/uploads",
-      express.static(path.join(process.cwd(), "public/uploads"))
-    );
-
-    // Routes API
-    app.use("/api/users", userRoutes);
-    app.use("/api/auth", authRoutes);
-    app.use("/api/messages", messageRoutes);
-    app.use("/api/notifications", notificationRoutes);
-
-    // Lancement du serveur
-    app.listen(PORT, () =>
-      console.log(`✅ Serveur en fonctionnement sur le port ${PORT}`)
+    server.listen(PORT, () =>
+      console.log(`Serveur démarré sur le port ${PORT}`)
     );
   } catch (error) {
-    console.error("❌ Erreur de démarrage du serveur :", error);
+    console.error("Erreur de démarrage:", error);
     process.exit(1);
   }
 };
