@@ -29,6 +29,7 @@ const Message = sequelize.define(
     sujet: { type: DataTypes.STRING, allowNull: false },
     contenu: { type: DataTypes.TEXT, allowNull: false },
     estBrouillon: { type: DataTypes.BOOLEAN, defaultValue: false },
+    estenvoye: { type: DataTypes.BOOLEAN, defaultValue: false },
     estLu: { type: DataTypes.BOOLEAN, defaultValue: false },
     estFavori: { type: DataTypes.BOOLEAN, defaultValue: false },
     estArchive: { type: DataTypes.BOOLEAN, defaultValue: false },

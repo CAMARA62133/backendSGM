@@ -38,55 +38,159 @@ const convertirEmailsEnIds = async (emails) => {
   return { ids, emailsInvalides };
 };
 
+
 /* ======================================================
-   📤 ENVOYER MESSAGE
+   📤 ENVOYER MESSAGE AVEC GESTION RÉELLE DES BROUILLONS
 ====================================================== */
 const envoyerMessage = async (req, res) => {
   try {
-    const { sujet, contenu, destinataires, estBrouillon = false, threadId, mode } = req.body;
+    const {
+      sujet,
+      contenu,
+      destinataires,
+      estBrouillon = false,
+      threadId,
+      mode,
+      messageId, // ID du brouillon existant si édition
+    } = req.body;
+
+    // 🔹 Corriger le type de estBrouillon (multipart/form-data envoie tout en string)
+    const estBrouillonBool = estBrouillon === true || estBrouillon === "true";
+
+    let message;
+
+    // ===============================
+    // 1️⃣ Gestion brouillon
+    // ===============================
+    if (estBrouillonBool) {
+      if (messageId) {
+        // Mettre à jour un brouillon existant
+        message = await Message.findByPk(messageId, {
+          include: [{ model: PieceJointe, as: "piecesJointes" }],
+        });
+        if (!message)
+          return res
+            .status(404)
+            .json({ success: false, message: "Brouillon introuvable" });
+
+        await message.update({
+          sujet,
+          contenu,
+          threadId: mode !== "new" ? threadId : null,
+          estBrouillon: true,
+          estEnvoye: false,
+          dateEnvoi: null,
+        });
+
+        // Supprimer les destinataires existants pour éviter doublons
+        await message.setDestinataires([], {
+          through: { archive: false, supprime: false, favori: false },
+        });
+      } else {
+        // Création d'un nouveau brouillon
+        message = await Message.create({
+          sujet,
+          contenu,
+          expediteurId: req.user.id,
+          threadId: mode !== "new" ? threadId : null,
+          estBrouillon: true,
+          estEnvoye: false,
+          dateEnvoi: null,
+        });
+      }
+
+      // Ajouter les nouvelles pièces jointes
+      if (req.files?.length > 0) {
+        const pieces = req.files.map((file) => ({
+          nom: file.originalname,
+          chemin: file.path,
+          typeMime: file.mimetype,
+          taille: file.size,
+          messageId: message.id,
+        }));
+        await PieceJointe.bulkCreate(pieces);
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: "Brouillon sauvegardé",
+        data: await Message.findByPk(message.id, {
+          include: [{ model: PieceJointe, as: "piecesJointes" }],
+        }),
+      });
+    }
+
+    // ===============================
+    // 2️⃣ Message envoyé
+    // ===============================
 
     // Convertir emails en IDs
-    const { ids: idsDestinataires, emailsInvalides } = await convertirEmailsEnIds(destinataires);
-    if (emailsInvalides.length > 0)
+    const { ids: idsDestinataires, emailsInvalides } =
+      await convertirEmailsEnIds(destinataires);
+    if (emailsInvalides.length > 0) {
       return res.status(400).json({
         success: false,
         message: "Certains destinataires n'existent pas",
         emailsInvalides,
       });
-
-    // Créer le message principal (expéditeur)
-    const messageCree = await Message.create({
-      sujet,
-      contenu,
-      expediteurId: req.user.id,
-      threadId: mode !== "new" ? threadId : null,
-      estBrouillon,
-      estArchive: false, // Expéditeur non archivé
-    });
-
-    if (!estBrouillon) {
-      messageCree.dateEnvoi = new Date();
-      await messageCree.save();
     }
 
-    // Associer destinataires dans la table pivot avec états par défaut
-    await messageCree.setDestinataires(idsDestinataires, {
+    if (messageId) {
+      // Envoyer un brouillon existant
+      message = await Message.findByPk(messageId, {
+        include: [{ model: PieceJointe, as: "piecesJointes" }],
+      });
+      if (!message)
+        return res
+          .status(404)
+          .json({ success: false, message: "Brouillon introuvable" });
+
+      // Mise à jour du brouillon pour l'envoyer
+      await message.update({
+        sujet,
+        contenu,
+        estBrouillon: false,
+        estEnvoye: true,
+        dateEnvoi: new Date(),
+        threadId: mode !== "new" ? threadId : null,
+      });
+
+      // Supprimer les anciennes relations destinataires pour éviter doublons
+      await message.setDestinataires([], {
+        through: { archive: false, supprime: false, favori: false },
+      });
+    } else {
+      // Nouveau message
+      message = await Message.create({
+        sujet,
+        contenu,
+        expediteurId: req.user.id,
+        estBrouillon: false,
+        estEnvoye: true,
+        dateEnvoi: new Date(),
+        threadId: mode !== "new" ? threadId : null,
+      });
+    }
+
+    // Associer les destinataires
+    await message.setDestinataires(idsDestinataires, {
       through: { archive: false, supprime: false, favori: false },
     });
 
-    // Pièces jointes
+    // Ajouter les nouvelles pièces jointes
     if (req.files?.length > 0) {
-      const pieces = req.files.map(file => ({
+      const pieces = req.files.map((file) => ({
         nom: file.originalname,
         chemin: file.path,
         typeMime: file.mimetype,
         taille: file.size,
-        messageId: messageCree.id,
+        messageId: message.id,
       }));
       await PieceJointe.bulkCreate(pieces);
     }
 
-    const messageAvecRelations = await Message.findByPk(messageCree.id, {
+    // Charger message complet avec relations
+    const messageAvecRelations = await Message.findByPk(message.id, {
       include: [
         { model: User, as: "expediteur" },
         { model: User, as: "destinataires" },
@@ -94,7 +198,7 @@ const envoyerMessage = async (req, res) => {
       ],
     });
 
-    // Envoyer notification email
+    // Envoyer email aux destinataires
     for (const idDest of idsDestinataires) {
       const destinataire = await User.findByPk(idDest);
       if (destinataire) {
@@ -105,23 +209,26 @@ const envoyerMessage = async (req, res) => {
            <p>Vous avez reçu un nouveau message.</p>
            <p><strong>Sujet:</strong> ${sujet}</p>
            <p><strong>Contenu:</strong><br>${contenu}</p>
-           <a href="${process.env.FRONTEND_URL}/messaging/message/${messageCree.id}">
+           <a href="${process.env.FRONTEND_URL}/messaging/message/${message.id}">
              Voir le message dans l'application
            </a>`
         );
       }
     }
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: estBrouillon ? "Brouillon sauvegardé" : "Message envoyé avec succès",
+      message: "Message envoyé avec succès",
       data: messageAvecRelations,
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Erreur serveur" });
+    return res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
+
+
+
 
 /* ======================================================
    📥 MESSAGES REÇUS
@@ -174,11 +281,17 @@ const getMessagesRecus = async (req, res) => {
 ====================================================== */
 const getMessagesEnvoyes = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.max(parseInt(req.query.limit) || 20, 1);
+    const offset = (page - 1) * limit;
 
     const { rows: messages, count: total } = await Message.findAndCountAll({
-      where: { expediteurId: req.user.id, estBrouillon: false, estSupprime: false, estArchive: false },
+      where: { 
+        expediteurId: req.user.id, 
+        estBrouillon: false, 
+        estSupprime: false, 
+        estArchive: false 
+      },
       include: [
         { model: User, as: "expediteur", attributes: ["nom", "prenom", "email", "photo"] },
         { model: User, as: "destinataires", attributes: ["nom", "prenom", "email", "photo"], through: { attributes: [] } },
@@ -186,13 +299,18 @@ const getMessagesEnvoyes = async (req, res) => {
       ],
       order: [["dateEnvoi", "DESC"]],
       limit,
-      offset: (page - 1) * limit,
+      offset,
       distinct: true,
     });
 
     res.json({
       success: true,
-      data: messages.map(m => ({ ...m.toJSON(), destinataires: m.destinataires || [], piecesJointes: m.piecesJointes || [], expediteur: m.expediteur || null })),
+      data: messages.map(m => ({
+        ...m.toJSON(),
+        destinataires: m.destinataires || [],
+        piecesJointes: m.piecesJointes || [],
+        expediteur: m.expediteur || null
+      })),
       pagination: { page, pages: Math.ceil(total / limit), total },
     });
   } catch (err) {
@@ -209,8 +327,9 @@ const getBrouillons = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Utilisateur non authentifié" });
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.max(parseInt(req.query.limit) || 20, 1);
+    const offset = (page - 1) * limit;
 
     const { rows: messages, count: total } = await Message.findAndCountAll({
       where: { expediteurId: userId, estBrouillon: true, estSupprime: false },
@@ -220,16 +339,21 @@ const getBrouillons = async (req, res) => {
       ],
       order: [["dateEnvoi", "DESC"]],
       limit,
-      offset: (page - 1) * limit,
+      offset,
       distinct: true,
     });
 
     res.json({
       success: true,
-      data: messages.map(m => ({ ...m.toJSON(), destinataires: m.destinataires || [], piecesJointes: m.piecesJointes || [] })),
+      data: messages.map(m => ({
+        ...m.toJSON(),
+        destinataires: m.destinataires || [],
+        piecesJointes: m.piecesJointes || []
+      })),
       pagination: { page, pages: Math.ceil(total / limit), total },
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
@@ -1048,10 +1172,6 @@ const nombreMessagesFavoris = async (req, res) => {
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
-
-
-
-
 
 /* ======================================================
    🚀 EXPORT DES FONCTIONS
