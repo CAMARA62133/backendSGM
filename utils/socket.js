@@ -15,9 +15,10 @@ export const initSocket = (server) => {
   io.on("connection", (socket) => {
     console.log("Utilisateur connecté:", socket.id);
 
-    // Rejoindre une conversation (privé ou groupe)
+    // ================= JOIN =================
     socket.on("joinConversation", async ({ groupId, recipientId, userId }) => {
       if (!userId) return;
+
       if (groupId) socket.join("group_" + groupId);
       if (recipientId)
         socket.join("private_" + [userId, recipientId].sort().join("_"));
@@ -29,17 +30,24 @@ export const initSocket = (server) => {
         where: { id: Array.from(onlineUsers.keys()) },
         attributes: ["id", "nom", "prenom"],
       });
-      io.emit("onlineUsers", usersData);
+
+      // 🔥 MODIFICATION ICI
+      for (const [uid, sockets] of onlineUsers.entries()) {
+        const otherUsers = usersData.filter((user) => user.id !== uid);
+
+        sockets.forEach((socketId) => {
+          io.to(socketId).emit("onlineUsers", otherUsers);
+        });
+      }
     });
 
-    // Envoyer un message
+    // ================= SEND MESSAGE =================
     socket.on(
       "sendMessage",
       async ({ content, groupId, recipientId, userId }) => {
         if (!content) return;
 
         try {
-          // Créer le message côté serveur
           const msg = await Communication.create({
             content,
             groupId: groupId || null,
@@ -53,35 +61,44 @@ export const initSocket = (server) => {
             ],
           });
 
-          // Émettre le message aux bons canaux
           if (groupId)
             io.to("group_" + groupId).emit("receiveMessage", msgWithUser);
+
           if (recipientId)
-            io.to("private_" + [userId, recipientId].sort().join("_")).emit(
-              "receiveMessage",
-              msgWithUser
-            );
+            io.to("private_" + [userId, recipientId].sort().join("_"))
+              .emit("receiveMessage", msgWithUser);
+
         } catch (err) {
           console.error("Erreur envoi message:", err);
         }
       }
     );
 
-    // Déconnexion
+    // ================= DISCONNECT =================
     socket.on("disconnect", async () => {
       onlineUsers.forEach((sockets, userId) => {
         onlineUsers.set(
           userId,
           sockets.filter((id) => id !== socket.id)
         );
-        if (onlineUsers.get(userId).length === 0) onlineUsers.delete(userId);
+        if (onlineUsers.get(userId).length === 0)
+          onlineUsers.delete(userId);
       });
 
       const usersData = await User.findAll({
         where: { id: Array.from(onlineUsers.keys()) },
         attributes: ["id", "nom", "prenom"],
       });
-      io.emit("onlineUsers", usersData);
+
+      // 🔥 MODIFICATION ICI
+      for (const [uid, sockets] of onlineUsers.entries()) {
+        const otherUsers = usersData.filter((user) => user.id !== uid);
+
+        sockets.forEach((socketId) => {
+          io.to(socketId).emit("onlineUsers", otherUsers);
+        });
+      }
+
       console.log("Utilisateur déconnecté:", socket.id);
     });
   });
