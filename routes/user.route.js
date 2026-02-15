@@ -11,10 +11,10 @@ import {
   deleteUser,
   importUsers,
   changePassword,
-} from "../controllers/userControllers.js"; // contrôleurs des utilisateurs
-import upload from "../middlewares/uploads.js"; // middleware pour gérer les fichiers uploadés
-import { getCurrentUser } from "../controllers/authControllers.js"; // récupère l'utilisateur connecté
-import { requireAuth } from "../middlewares/authMiddlewares.js"; // middleware d'authentification
+} from "../controllers/userControllers.js";
+import upload from "../middlewares/uploads.js";
+import { getCurrentUser } from "../controllers/authControllers.js";
+import { requireAuth } from "../middlewares/authMiddlewares.js";
 
 const router = express.Router();
 
@@ -24,34 +24,27 @@ const router = express.Router();
 
 // 🔹 Créer un utilisateur
 // POST /api/users/
-// - Utilise upload.single("file") pour gérer l'upload d'une photo ou d'un fichier
-router.post("/", upload.single("file"), createUser);
+// - Upload d'une photo de profil
+router.post("/", upload.single("photo"), createUser);
 
 // 🔹 Récupérer la liste de tous les utilisateurs
-// GET /api/users/
 router.get("/", requireAuth, getAllUsers);
 
 // 🔹 Récupérer les informations de l'utilisateur connecté
-// GET /api/users/me
-// - Middleware requireAuth pour s'assurer que l'utilisateur est authentifié
-// - Doit être avant la route /:id pour éviter les conflits
 router.get("/me", requireAuth, getCurrentUser);
 
 // 🔹 Récupérer un utilisateur par son ID
-// GET /api/users/:id
 router.get("/:id", getUserById);
 
 // 🔹 Mettre à jour un utilisateur
 // PUT /api/users/:id
-// - Upload possible d'une nouvelle photo avec upload.single("file")
-router.put("/:id", upload.single("file"), updateUser);
+// - Upload possible d'une nouvelle photo de profil
+router.put("/:id", upload.single("photo"), updateUser);
 
 // 🔹 Supprimer un utilisateur
-// DELETE /api/users/:id
 router.delete("/:id", deleteUser);
 
 // 🔹 Réinitialiser le mot de passe d'un utilisateur
-// POST /api/users/reset-password
 router.post("/change-password", changePassword);
 
 // 🔹 Importer des utilisateurs depuis un fichier Excel/CSV

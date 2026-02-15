@@ -4,11 +4,9 @@ import crypto from "crypto";
 import User from "../models/User.js";
 import { sendEmail } from "../utils/email.js"; // ton utilitaire d'envoi d'email
 
-/**
- * ==============================
- * CREATE USER
- * ==============================
- */
+// ==============================
+// CREATE USER
+// ==============================
 export const createUser = async (req, res) => {
   try {
     const {
@@ -24,18 +22,8 @@ export const createUser = async (req, res) => {
     } = req.body;
 
     // Vérification des champs obligatoires
-    if (
-      !type ||
-      !nom ||
-      !prenom ||
-      !email ||
-      !pays ||
-      !region ||
-      !etablissement
-    ) {
-      return res.status(400).json({
-        message: "Veuillez remplir tous les champs obligatoires.",
-      });
+    if (!type || !nom || !prenom || !email || !pays || !region || !etablissement) {
+      return res.status(400).json({ message: "Veuillez remplir tous les champs obligatoires." });
     }
 
     // Vérifier si l'email existe déjà
@@ -47,25 +35,27 @@ export const createUser = async (req, res) => {
     // Génération d'un mot de passe temporaire (8 caractères)
     const tempPassword = crypto.randomBytes(4).toString("hex");
 
-    // Création de l'utilisateur avec le mot de passe temporaire
+    // Création de l'utilisateur avec mot de passe temporaire
     const user = await User.create({
       type,
       nom,
       prenom,
       email,
-      password: tempPassword, // mot de passe temporaire
+      password: tempPassword,
       telephone,
       adresse,
       pays,
       region,
       etablissement,
       photo: req.file ? "/uploads/photos/" + req.file.filename : null,
-      doitChangerPassword: true, // ⚡ obliger l'utilisateur à changer le mot de passe
+      doitChangerPassword: true,
     });
+
     // Générer le lien de changement de mot de passe
     const resetLink = `${process.env.FRONTEND_URL}/change-password?userId=${user.id}`;
-    // Envoyer l'email avec le mot de passe temporaire et le lien
-    sendEmail(
+
+    // Envoyer l'email avec le mot de passe temporaire
+    await sendEmail(
       user.email,
       "Compte créé ✅",
       `<p>Bonjour ${user.prenom},</p>
@@ -75,29 +65,24 @@ export const createUser = async (req, res) => {
     );
 
     res.status(201).json({
-      message:
-        "Utilisateur créé avec succès. Un email a été envoyé avec vos identifiants.",
-      user: { id: user.id, email: user.email, prenom: user.prenom },
+      message: "Utilisateur créé avec succès. Un email a été envoyé avec vos identifiants.",
+      user: { id: user.id, email: user.email, prenom: user.prenom, photo: user.photo },
     });
   } catch (err) {
-    console.error("Erreur createUser :", err);
+    console.error("❌ Erreur createUser :", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-
-
-/**
- * ==============================
- * UPDATE USER
- * ==============================
- */
+// ==============================
+// UPDATE USER
+// ==============================
 export const updateUser = async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id);
     if (!user)
       return res.status(404).json({ message: "Utilisateur non trouvé." });
- 
+
     const {
       nom,
       prenom,
@@ -110,6 +95,7 @@ export const updateUser = async (req, res) => {
       password,
     } = req.body;
 
+    // Mise à jour des champs si fournis
     if (nom) user.nom = nom;
     if (prenom) user.prenom = prenom;
     if (telephone) user.telephone = telephone;
@@ -118,24 +104,37 @@ export const updateUser = async (req, res) => {
     if (pays) user.pays = pays;
     if (region) user.region = region;
     if (etablissement) user.etablissement = etablissement;
-    if (password) user.password = await bcrypt.hash(password, 10);
+    if (password) user.password = password; 
 
+    // Gestion de la photo
     if (req.file) {
       // Supprimer ancienne photo
-      if (user.photo && fs.existsSync("public" + user.photo))
-        fs.unlinkSync("public" + user.photo);
-      user.photo = "/uploads/photos/" + req.file.filename;
+      if (user.photo) {
+        const oldPhotoPath = path.join(process.cwd(), "public", user.photo);
+        if (fs.existsSync(oldPhotoPath)) fs.unlinkSync(oldPhotoPath);
+      }
+
+      // Stocker le nouveau chemin relatif
+      user.photo = `/uploads/${req.file.filename}`;
     }
 
     await user.save();
 
-    res.json({ message: "Utilisateur mis à jour avec succès.", user });
+    // Retourner l'utilisateur avec URL complète pour React
+    const userJSON = user.toJSON();
+    if (userJSON.photo) {
+      userJSON.photo = `${process.env.BACKEND_URL}${userJSON.photo}`;
+    }
+
+    res.json({
+      message: "Utilisateur mis à jour avec succès.",
+      user: userJSON,
+    });
   } catch (err) {
     console.error("❌ Erreur updateUser :", err);
     res.status(500).json({ message: err.message });
   }
 };
-
 /**
  * ==============================
  * GET ALL USERS

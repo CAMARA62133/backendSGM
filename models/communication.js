@@ -12,15 +12,22 @@ Communication.init(
     userId: { type: DataTypes.INTEGER, allowNull: false },
     recipientId: { type: DataTypes.INTEGER, allowNull: true },
     groupId: { type: DataTypes.INTEGER, allowNull: true },
+    // 🟢 AJOUT : État de lecture pour les badges de notification
+    isRead: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false,
+    },
   },
   {
     sequelize,
     modelName: "Communication",
     tableName: "communication",
     timestamps: true,
-  }
+  },
 );
 
+// Associations
 Communication.belongsTo(User, { foreignKey: "userId", as: "user" });
 Communication.belongsTo(User, { foreignKey: "recipientId", as: "recipient" });
 Communication.belongsTo(Group, { foreignKey: "groupId", as: "group" });
