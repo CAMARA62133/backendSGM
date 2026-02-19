@@ -13,7 +13,6 @@ import {
   changePassword,
 } from "../controllers/userControllers.js";
 import upload from "../middlewares/uploads.js";
-import { getCurrentUser } from "../controllers/authControllers.js";
 import { requireAuth } from "../middlewares/authMiddlewares.js";
 
 const router = express.Router();
@@ -29,9 +28,6 @@ router.post("/", upload.single("photo"), createUser);
 
 // 🔹 Récupérer la liste de tous les utilisateurs
 router.get("/", requireAuth, getAllUsers);
-
-// 🔹 Récupérer les informations de l'utilisateur connecté
-router.get("/me", requireAuth, getCurrentUser);
 
 // 🔹 Récupérer un utilisateur par son ID
 router.get("/:id", getUserById);

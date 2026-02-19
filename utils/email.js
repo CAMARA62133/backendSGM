@@ -1,7 +1,6 @@
 
 
 import nodemailer from "nodemailer";
-
 /**
  * Fonction pour envoyer un e-mail
  * @param {string} to - Adresse email du destinataire

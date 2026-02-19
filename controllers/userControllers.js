@@ -1,202 +1,164 @@
+// ==============================
+// controllers/userControllers.js
+// ==============================
 import fs from "fs";
-import XLSX from "xlsx";
 import crypto from "crypto";
+import XLSX from "xlsx";
 import User from "../models/User.js";
-import { sendEmail } from "../utils/email.js"; // ton utilitaire d'envoi d'email
+import { sendEmail } from "../utils/email.js";
 
-// ==============================
-// CREATE USER
-// ==============================
+/**
+ * --- CRÉER UN UTILISATEUR (Individuel) ---
+ * Génère un mot de passe temporaire et force le changement à la première connexion.
+ */
 export const createUser = async (req, res) => {
   try {
-    const {
-      type,
-      nom,
-      prenom,
-      email,
-      telephone,
-      adresse,
-      pays,
-      region,
-      etablissement,
-    } = req.body;
+    const { email, ...rest } = req.body;
 
-    // Vérification des champs obligatoires
-    if (!type || !nom || !prenom || !email || !pays || !region || !etablissement) {
-      return res.status(400).json({ message: "Veuillez remplir tous les champs obligatoires." });
-    }
-
-    // Vérifier si l'email existe déjà
+    // Vérification unicité
     const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
-      return res.status(400).json({ message: "Cet email est déjà utilisé." });
+      return res.status(409).json({ message: "Cet email est déjà utilisé" });
     }
 
-    // Génération d'un mot de passe temporaire (8 caractères)
+    // Mot de passe temporaire & Photo
     const tempPassword = crypto.randomBytes(4).toString("hex");
+    const photoPath = req.file ? `/uploads/photos/${req.file.filename}` : null;
 
-    // Création de l'utilisateur avec mot de passe temporaire
     const user = await User.create({
-      type,
-      nom,
-      prenom,
+      ...rest,
       email,
-      password: tempPassword,
-      telephone,
-      adresse,
-      pays,
-      region,
-      etablissement,
-      photo: req.file ? "/uploads/photos/" + req.file.filename : null,
+      password: tempPassword, // Haché automatiquement par le modèle
+      photo: photoPath,
       doitChangerPassword: true,
     });
 
-    // Générer le lien de changement de mot de passe
+    // Lien de redirection vers le frontend
     const resetLink = `${process.env.FRONTEND_URL}/change-password?userId=${user.id}`;
 
-    // Envoyer l'email avec le mot de passe temporaire
     await sendEmail(
       user.email,
-      "Compte créé ✅",
+      "Accès à votre compte ✅",
       `<p>Bonjour ${user.prenom},</p>
-       <p>Votre compte a été créé avec succès.</p>
-       <p>Email: ${user.email}<br>Mot de passe temporaire: <strong>${tempPassword}</strong></p>
-       <p>Veuillez <a href="${resetLink}">cliquer ici</a> pour définir votre nouveau mot de passe.</p>`
+       <p>Votre compte a été créé par l'administrateur.</p>
+       <p>Identifiants :<br>Email: <strong>${user.email}</strong><br>
+       Mot de passe temporaire: <strong>${tempPassword}</strong></p>
+       <p>Veuillez <a href="${resetLink}">cliquer ici</a> pour définir votre mot de passe personnel.</p>`,
     );
 
-    res.status(201).json({
-      message: "Utilisateur créé avec succès. Un email a été envoyé avec vos identifiants.",
-      user: { id: user.id, email: user.email, prenom: user.prenom, photo: user.photo },
-    });
-  } catch (err) {
-    console.error("❌ Erreur createUser :", err);
-    res.status(500).json({ message: err.message });
+    res.status(201).json({ message: "Utilisateur enregistré avec succès" });
+  } catch (error) {
+    console.error("Erreur createUser:", error);
+    res
+      .status(500)
+      .json({ message: "Erreur lors de la création de l'utilisateur" });
   }
 };
 
-// ==============================
-// UPDATE USER
-// ==============================
+/**
+ * --- METTRE À JOUR UN UTILISATEUR ---
+ */
 export const updateUser = async (req, res) => {
   try {
-    const user = await User.findByPk(req.params.id);
+    const { id } = req.params;
+    const user = await User.findByPk(id);
+
     if (!user)
-      return res.status(404).json({ message: "Utilisateur non trouvé." });
+      return res.status(404).json({ message: "Utilisateur introuvable" });
 
-    const {
-      nom,
-      prenom,
-      telephone,
-      adresse,
-      isActif,
-      pays,
-      region,
-      etablissement,
-      password,
-    } = req.body;
+    // Filtrage des champs autorisés
+    const allowedFields = [
+      "type",
+      "nom",
+      "prenom",
+      "email",
+      "telephone",
+      "adresse",
+      "pays",
+      "region",
+      "etablissement",
+      "password",
+    ];
 
-    // Mise à jour des champs si fournis
-    if (nom) user.nom = nom;
-    if (prenom) user.prenom = prenom;
-    if (telephone) user.telephone = telephone;
-    if (adresse) user.adresse = adresse;
-    if (typeof isActif === "boolean") user.isActif = isActif;
-    if (pays) user.pays = pays;
-    if (region) user.region = region;
-    if (etablissement) user.etablissement = etablissement;
-    if (password) user.password = password; 
-
-    // Gestion de la photo
-    if (req.file) {
-      // Supprimer ancienne photo
-      if (user.photo) {
-        const oldPhotoPath = path.join(process.cwd(), "public", user.photo);
-        if (fs.existsSync(oldPhotoPath)) fs.unlinkSync(oldPhotoPath);
-      }
-
-      // Stocker le nouveau chemin relatif
-      user.photo = `/uploads/${req.file.filename}`;
-    }
-
-    await user.save();
-
-    // Retourner l'utilisateur avec URL complète pour React
-    const userJSON = user.toJSON();
-    if (userJSON.photo) {
-      userJSON.photo = `${process.env.BACKEND_URL}${userJSON.photo}`;
-    }
-
-    res.json({
-      message: "Utilisateur mis à jour avec succès.",
-      user: userJSON,
+    const dataToUpdate = {};
+    allowedFields.forEach((field) => {
+      if (req.body[field] !== undefined) dataToUpdate[field] = req.body[field];
     });
-  } catch (err) {
-    console.error("❌ Erreur updateUser :", err);
-    res.status(500).json({ message: err.message });
+
+    // Gestion de la photo (Suppression de l'ancienne si nouvelle)
+    if (req.file) {
+      if (user.photo && fs.existsSync(`./public${user.photo}`)) {
+        try {
+          fs.unlinkSync(`./public${user.photo}`);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      dataToUpdate.photo = `/uploads/photos/${req.file.filename}`;
+    }
+
+    await user.update(dataToUpdate);
+
+    const updatedUser = await User.findByPk(id, {
+      attributes: { exclude: ["password"] },
+    });
+
+    res.json({ message: "Utilisateur mis à jour", user: updatedUser });
+  } catch (error) {
+    console.error("Erreur updateUser:", error);
+    res.status(500).json({ message: "Erreur lors de la mise à jour" });
   }
 };
+
 /**
- * ==============================
- * GET ALL USERS
- * ==============================
+ * --- RÉCUPÉRER TOUS LES UTILISATEURS (Filtré par droits) ---
  */
 export const getAllUsers = async (req, res) => {
   try {
-    const loggedUser = req.user; // vient de requireAuth
+    const loggedUser = req.user;
+    let whereClause = {};
 
-    let users;
-
-    // ADMIN ou USER→ voit tout
-    if (loggedUser.type === "admin" || loggedUser.type === "user") {
-      users = await User.findAll({
-        order: [["createdAt", "DESC"]],
-      });
+    // Restriction pour les directeurs
+    if (loggedUser.type === "directeur") {
+      whereClause.etablissement = loggedUser.etablissement;
+    } else if (loggedUser.type !== "admin" && loggedUser.type !== "user") {
+      return res.status(403).json({ message: "Accès non autorisé" });
     }
 
-    // DIRECTEUR → voit seulement son établissement
-    else if (loggedUser.type === "directeur") {
-      users = await User.findAll({
-        where: { etablissement: loggedUser.etablissement },
-        order: [["createdAt", "DESC"]],
-      });
-    }
-
-    // AUTRE TYPE → accès refusé
-    else {
-      return res.status(403).json({
-        message: "Accès non autorisé",
-      });
-    }
+    const users = await User.findAll({
+      where: whereClause,
+      attributes: { exclude: ["password"] },
+      order: [["createdAt", "DESC"]],
+    });
 
     res.json({ users });
   } catch (err) {
-    console.error("❌ Erreur getAllUsers :", err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: "Erreur serveur" });
   }
 };
 
-
 /**
- * ==============================
- * GET USER BY ID
- * ==============================
+ * --- RÉCUPÉRER PAR ID ---
  */
 export const getUserById = async (req, res) => {
   try {
-    const user = await User.findByPk(req.params.id);
+    const user = await User.findByPk(req.params.id, {
+      attributes: { exclude: ["password"] },
+    });
+
     if (!user)
-      return res.status(404).json({ message: "Utilisateur non trouvé." });
-    res.json(user);
+      return res
+        .status(404)
+        .json({ success: false, message: "Utilisateur non trouvé." });
+
+    res.json({ success: true, data: user });
   } catch (err) {
-    console.error("❌ Erreur getUserById :", err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
 
 /**
- * ==============================
- * DELETE USER
- * ==============================
+ * --- SUPPRIMER ---
  */
 export const deleteUser = async (req, res) => {
   try {
@@ -204,89 +166,49 @@ export const deleteUser = async (req, res) => {
     if (!user)
       return res.status(404).json({ message: "Utilisateur non trouvé." });
 
-    if (user.photo && fs.existsSync("public" + user.photo))
-      fs.unlinkSync("public" + user.photo);
+    if (user.photo && fs.existsSync(`./public${user.photo}`)) {
+      try {
+        fs.unlinkSync(`./public${user.photo}`);
+      } catch (e) {
+        console.error(e);
+      }
+    }
 
     await user.destroy();
     res.json({ message: "Utilisateur supprimé avec succès." });
   } catch (err) {
-    console.error("❌ Erreur deleteUser :", err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: "Erreur lors de la suppression" });
   }
 };
 
 /**
- * ==============================
- * CHANGE / RESET PASSWORD (pré-save)
- * ==============================
- * 
- * Gestion du changement de mot de passe :
- * - Cas mot de passe temporaire : doitChangerPassword = true
- * - Cas mot de passe oublié : vérification email
+ * --- CHANGER MOT DE PASSE (Public / Reset) ---
  */
-// POST /api/users/change-password
 export const changePassword = async (req, res) => {
   try {
     const { userId, email, newPassword } = req.body;
-
     let user;
 
-    // 1️⃣ Vérification email (étape 1)
-    if (email && !newPassword && !userId) {
-      const existingUser = await User.findOne({ where: { email } });
-      if (!existingUser)
-        return res.status(404).json({ message: "Email non trouvé." });
+    if (userId) user = await User.findByPk(userId);
+    else if (email) user = await User.findOne({ where: { email } });
 
-      return res.status(200).json({
-        message:
-          "Email vérifié. Vous pouvez maintenant changer votre mot de passe.",
-      });
-    }
+    if (!user)
+      return res.status(404).json({ message: "Utilisateur introuvable." });
+    if (!newPassword)
+      return res.status(400).json({ message: "Nouveau mot de passe requis." });
 
-    // 2️⃣ Cas changement de mot de passe (étape 2)
-    if (!newPassword) {
-      return res
-        .status(400)
-        .json({ message: "Veuillez fournir un nouveau mot de passe." });
-    }
-
-    if (userId) {
-      user = await User.findByPk(userId);
-      if (!user)
-        return res.status(404).json({ message: "Utilisateur non trouvé." });
-    } else if (email) {
-      user = await User.findOne({ where: { email } });
-      if (!user) return res.status(404).json({ message: "Email non trouvé." });
-    } else {
-      return res.status(400).json({
-        message: "Aucun identifiant fourni pour changer le mot de passe.",
-      });
-    }
-
-    // Mise à jour du mot de passe
     user.password = newPassword;
-
-    if (user.doitChangerPassword) {
-      user.doitChangerPassword = false;
-    }
-
+    user.doitChangerPassword = false;
     await user.save();
 
-    res.status(200).json({
-      message: "Mot de passe mis à jour avec succès.",
-    });
+    res.status(200).json({ message: "Mot de passe mis à jour avec succès." });
   } catch (err) {
-    console.error("Erreur changePassword :", err);
     res.status(500).json({ message: err.message });
   }
 };
 
-
-
 /**
- * ==============================
- * IMPORT USERS FROM EXCEL/CSV
- * ==============================
+ * --- IMPORT EXCEL ---
  */
 export const importUsers = async (req, res) => {
   try {
@@ -294,72 +216,49 @@ export const importUsers = async (req, res) => {
       return res.status(400).json({ message: "Aucun fichier fourni." });
 
     const workbook = XLSX.readFile(req.file.path);
-    const sheetName = workbook.SheetNames[0];
-    const sheet = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+    const sheet = XLSX.utils.sheet_to_json(
+      workbook.Sheets[workbook.SheetNames[0]],
+    );
 
     const usersToCreate = [];
-    const emailsSent = [];
+    const emailData = [];
 
     for (const row of sheet) {
-      if (
-        !row.nom ||
-        !row.prenom ||
-        !row.pays ||
-        !row.region ||
-        !row.etablissement
-      )
-        continue;
+      if (!row.email || !row.nom) continue;
 
-      // 🔹 Générer mot de passe temporaire
-      const tempPassword = crypto.randomBytes(4).toString("hex"); // 8 caractères
-
+      const tempPassword = crypto.randomBytes(4).toString("hex");
       usersToCreate.push({
+        ...row,
         type: row.type || "user",
-        nom: row.nom,
-        prenom: row.prenom,
-        email: row.email, // important
-        password: tempPassword, // stocker en clair pour pré-save (si c'est ton choix)
-        doitChangerPassword: true, // ⚡ forcer changement du mot de passe
-        telephone: row.telephone || "",
-        adresse: row.adresse || "",
-        pays: row.pays,
-        region: row.region,
-        etablissement: row.etablissement,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        password: tempPassword,
+        doitChangerPassword: true,
       });
-
-      emailsSent.push({ email: row.email, prenom: row.prenom, tempPassword });
+      emailData.push({ email: row.email, prenom: row.prenom, tempPassword });
     }
 
-    // 🔹 Création en bulk
-    const createdUsers = await User.bulkCreate(usersToCreate);
+    // Utilisation de individualHooks pour forcer le hachage via le modèle
+    const createdUsers = await User.bulkCreate(usersToCreate, {
+      individualHooks: true,
+      ignoreDuplicates: true,
+    });
 
-    // 🔹 Envoyer les emails avec lien de changement de mot de passe
-    for (let i = 0; i < createdUsers.length; i++) {
-      const user = createdUsers[i];
-      const { tempPassword } = emailsSent[i];
-      const resetLink = `${process.env.FRONTEND_URL}/change-password?userId=${user.id}`;
-
+    // Envoi des emails aux comptes réellement créés
+    for (const info of emailData) {
+      const resetLink = `${process.env.FRONTEND_URL}/change-password`;
       sendEmail(
-        user.email,
-        "Compte créé ✅",
-        `<p>Bonjour ${user.prenom},</p>
-         <p>Votre compte a été créé avec succès.</p>
-         <p>Email: ${user.email}<br>Mot de passe temporaire: <strong>${tempPassword}</strong></p>
-         <p>Veuillez <a href="${resetLink}">cliquer ici</a> pour définir votre nouveau mot de passe.</p>`
+        info.email,
+        "Votre compte est prêt ✅",
+        `<p>Bonjour ${info.prenom}, votre mot de passe temporaire est : <strong>${info.tempPassword}</strong>. <br> Changez-le ici : <a href="${resetLink}">Lien</a></p>`,
       );
     }
 
-    res.status(201).json({
-      message: `${createdUsers.length} utilisateurs importés avec succès.`,
-      count: createdUsers.length,
-    });
-  } catch (err) {
-    console.error("❌ Erreur importUsers :", err);
+    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+
     res
-      .status(500)
-      .json({ message: "Erreur lors de l'importation des utilisateurs." });
+      .status(201)
+      .json({ message: `${createdUsers.length} utilisateurs importés.` });
+  } catch (err) {
+    console.error("Erreur Import:", err);
+    res.status(500).json({ message: "Erreur lors de l'importation." });
   }
 };
-

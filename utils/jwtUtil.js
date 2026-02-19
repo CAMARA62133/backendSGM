@@ -1,16 +1,31 @@
 import jwt from "jsonwebtoken";
+import ms from "ms";
 
-
-// Token longue durée : 3 jours
-const maxAge = 3 * 24 * 60 * 60; // en secondes
-
-const createToken = (id) => {
-  return jwt.sign({ id }, process.env.TOKEN_SECRET, { expiresIn: maxAge });
+const createToken = (user) => {
+  return jwt.sign(
+    {
+      id: user.id,
+      nom: user.nom,
+      prenom: user.prenom,
+      email: user.email,
+      telephone: user.telephone,
+      type: user.type,
+      adresse:user.adresse,
+      isActif: user.isActif,
+      photo: user.photo || null,
+      created_at: user.created_at ? user.created_at.toString() : null,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.INACTIVITY_TIME },
+  );
 };
 
-// Token courte durée pour inactivité : 15 minutes
-const generateShortToken = (id) => {
-  return jwt.sign({ id }, process.env.TOKEN_SECRET, { expiresIn: "15m" });
-};
+const getCookieOptions = () => ({
+  httpOnly: true,
 
-export{ createToken, generateShortToken, maxAge };
+  maxAge: ms(process.env.MAX_AGE),
+  sameSite: "lax",
+  secure: process.env.NODE_ENV === "production",
+});
+
+export { createToken, getCookieOptions };
