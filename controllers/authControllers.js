@@ -35,7 +35,7 @@ export const login = async (req, res) => {
 
     const { password: _, ...userPublic } = user.get();
 
-    // Création du Token et Cookie
+
     const token = createToken(userPublic);
     res.cookie("jwt", token, getCookieOptions());
 
