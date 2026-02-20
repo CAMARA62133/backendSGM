@@ -434,30 +434,41 @@ const getMessagesArchives = async (req, res) => {
   }
 };
 
-const toggleFavori = async (req, res) => {
+/* ======================================================
+   🛠️ GESTION DES FAVORIS (CORRIGÉE)
+====================================================== */
+
+ const toggleFavori = async (req, res) => {
   try {
     const userId = req.user.id;
     const messageId = req.params.id;
 
-    // Vérifier destinataire
+    // 1. Vérifier si l'utilisateur est un destinataire (table pivot)
     let pivot = await MessageDestinataire.findOne({ where: { userId, messageId } });
     if (pivot) {
       pivot.favori = !pivot.favori;
       await pivot.save();
-      return res.json({ success: true, message: pivot.favori ? "Message ajouté aux favoris" : "Message retiré des favoris" });
+      return res.json({ 
+        success: true, 
+        message: pivot.favori ? "Message ajouté aux favoris" : "Message retiré des favoris" 
+      });
     }
 
-    // Vérifier expéditeur
+    // 2. Vérifier si l'utilisateur est l'expéditeur (table principale)
+    // Correction ici : on utilise "estFavori" au lieu de "favoriExpediteur"
     const message = await Message.findOne({ where: { id: messageId, expediteurId: userId } });
     if (message) {
-      message.favoriExpediteur = !message.favoriExpediteur;
+      message.estFavori = !message.estFavori; 
       await message.save();
-      return res.json({ success: true, message: message.favoriExpediteur ? "Message ajouté aux favoris" : "Message retiré des favoris" });
+      return res.json({ 
+        success: true, 
+        message: message.estFavori ? "Message ajouté aux favoris" : "Message retiré des favoris" 
+      });
     }
 
     return res.status(403).json({ success: false, message: "Accès refusé" });
   } catch (err) {
-    console.error(err);
+    console.error("Erreur toggleFavori:", err);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
@@ -468,14 +479,20 @@ const getFavoris = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
 
-    // Messages favoris destinataire
-    const favDest = await MessageDestinataire.findAll({ where: { userId, favori: true }, attributes: ["messageId"] });
+    // Messages favoris en tant que destinataire
+    const favDest = await MessageDestinataire.findAll({ 
+      where: { userId, favori: true }, 
+      attributes: ["messageId"] 
+    });
     const favDestIds = favDest.map(f => f.messageId);
 
-    // Messages favoris expéditeur
-    const favExp = await Message.findAll({ where: { expediteurId: userId, favoriExpediteur: true }, attributes: ["id"] });
+    const favExp = await Message.findAll({ 
+      where: { expediteurId: userId, estFavori: true }, 
+      attributes: ["id"] 
+    });
     const favExpIds = favExp.map(f => f.id);
 
+    // Fusion des IDs uniques
     const favIds = [...new Set([...favDestIds, ...favExpIds])];
 
     const { rows: messages, count: total } = await Message.findAndCountAll({
@@ -493,15 +510,22 @@ const getFavoris = async (req, res) => {
 
     res.json({
       success: true,
-      data: messages.map(m => ({ ...m.toJSON(), destinataires: m.destinataires || [], piecesJointes: m.piecesJointes || [], expediteur: m.expediteur || null })),
+      data: messages.map(m => ({ 
+        ...m.toJSON(), 
+        destinataires: m.destinataires || [], 
+        piecesJointes: m.piecesJointes || [], 
+        expediteur: m.expediteur || null 
+      })),
       pagination: { page, pages: Math.ceil(total / limit), total },
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("Erreur getFavoris:", err);
     res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 };
+
+
 
 /* ======================================================
    🗑️ CORBEILLE (Destinataire + Expéditeur)
