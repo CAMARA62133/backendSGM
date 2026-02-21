@@ -189,14 +189,22 @@ export const changePassword = async (req, res) => {
     const { userId, email, newPassword } = req.body;
     let user;
 
+    // Vérifier l'utilisateur par ID ou email
     if (userId) user = await User.findByPk(userId);
     else if (email) user = await User.findOne({ where: { email } });
 
     if (!user)
       return res.status(404).json({ message: "Utilisateur introuvable." });
-    if (!newPassword)
-      return res.status(400).json({ message: "Nouveau mot de passe requis." });
 
+    // Si pas de nouveau mot de passe, c'est juste la vérification de l'existence
+    if (!newPassword) {
+      return res.status(200).json({
+        message: "Utilisateur trouvé. Vous pouvez maintenant changer le mot de passe.",
+        userId: user.id, // utile pour la prochaine étape
+      });
+    }
+
+    // Sinon, on change le mot de passe
     user.password = newPassword;
     user.doitChangerPassword = false;
     await user.save();

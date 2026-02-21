@@ -7,6 +7,7 @@ import bcrypt from "bcrypt";
 import { sendEmail } from "../utils/email.js";
 
 // --- Connexion de l'utilisateur ---
+
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -33,8 +34,15 @@ export const login = async (req, res) => {
       });
     }
 
-    const { password: _, ...userPublic } = user.get();
+    // 🔹 Vérifie si l'utilisateur doit changer son mot de passe
+    if (user.doitChangerPassword) {
+      return res.status(403).json({
+        message: "Vous devez changer votre mot de passe avant de continuer.",
+        userId: user.id, // on renvoie l'ID pour la réinitialisation
+      });
+    }
 
+    const { password: _, ...userPublic } = user.get();
 
     const token = createToken(userPublic);
     res.cookie("jwt", token, getCookieOptions());

@@ -54,10 +54,11 @@ const connectDB = async () => {
         nom: "Camara",
         prenom: "Karifa",
         email: adminEmail,
-        password: "Camara@123", // hashé automatiquement
+        password: "Camara@123", 
         pays: "Guinée",
         region: "Mamou",
         etablissement: "TRV",
+        doitChangerPassword:false,
       });
       console.log("✅ Admin créé :", admin.email);
     } else {
