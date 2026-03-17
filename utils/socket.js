@@ -1,10 +1,11 @@
-// utils/socket.js
 import { Server } from "socket.io";
 import User from "../models/User.js";
-import Communication from "../models/communication.js";
+import Communication from "../models/Communication.js";
 import { GroupUser } from "../models/group.js";
+import { DNDSettings } from "../models/index.js";
+import { getConversationId } from "./idHelper.js";
 
-export const onlineUsers = new Map();
+export const onlineUsers = new Map(); // userId -> [socketIds]
 
 export const initSocket = (server) => {
   const io = new Server(server, {
@@ -15,146 +16,208 @@ export const initSocket = (server) => {
   });
 
   io.on("connection", (socket) => {
-    console.log("Utilisateur connecté:", socket.id);
-
-    // ================= JOIN =================
+    // 1️⃣ REJOINDRE UNE CONVERSATION
     socket.on("joinConversation", async ({ userId, groupId, recipientId }) => {
       if (!userId) return;
+      socket.userId = Number(userId);
 
-      socket.userId = userId;
-
-      // Stocker utilisateur en ligne
-      if (!onlineUsers.has(userId)) {
-        onlineUsers.set(userId, []);
+      if (!onlineUsers.has(socket.userId)) onlineUsers.set(socket.userId, []);
+      if (!onlineUsers.get(socket.userId).includes(socket.id)) {
+        onlineUsers.get(socket.userId).push(socket.id);
       }
 
-      if (!onlineUsers.get(userId).includes(socket.id)) {
-        onlineUsers.get(userId).push(socket.id);
-      }
-
-      // Rejoindre room si conversation ouverte
-      if (groupId) {
-        socket.join("group_" + groupId);
-      }
-
+      if (groupId) socket.join("group_" + Number(groupId));
       if (recipientId) {
-        const room = "private_" + [userId, recipientId].sort().join("_");
+        const room =
+          "private_" + [socket.userId, Number(recipientId)].sort().join("_");
         socket.join(room);
       }
 
-      await updateOnlineUsers(io);
+      await updateOnlineUsersByCompany(io, socket.userId);
     });
 
-    // ================= SEND MESSAGE =================
-    socket.on(
-      "sendMessage",
-      async ({ content, groupId, recipientId, userId }) => {
-        if (!content?.trim()) return;
+    // 2️⃣ ENVOYER UN MESSAGE (Avec DND et Auto-Reply)
+    socket.on("sendMessage", async ({ content, groupId, recipientId }) => {
+      const userId = socket.userId;
+      if (!userId || !content?.trim()) return;
 
-        try {
-          // 1️⃣ Sauvegarde en base
-          const msg = await Communication.create({
-            content,
-            groupId: groupId || null,
-            recipientId: recipientId || null,
-            userId,
-            isRead: false,
-          });
+      try {
+        // Identification de la conversation
+        let conversationId = groupId
+          ? groupId.toString()
+          : getConversationId(userId, recipientId);
 
-          const msgWithUser = await Communication.findByPk(msg.id, {
-            include: [
-              { model: User, attributes: ["id", "nom", "prenom"], as: "user" },
-            ],
-          });
+        let notify = true;
+        let autoReply = null;
 
-          // ================= GROUPE =================
-          if (groupId) {
-            // Envoyer message aux utilisateurs qui ont ouvert la room
-            socket.to("group_" + groupId).emit("receiveMessage", msgWithUser);
+        // --- Logique DND pour les messages privés ---
+        if (recipientId && !groupId) {
+          // Chercher DND spécifique puis global
+          let dnd =
+            (await DNDSettings.findOne({
+              where: {
+                userId: Number(recipientId),
+                conversationId: conversationId,
+              },
+            })) ||
+            (await DNDSettings.findOne({
+              where: { userId: Number(recipientId), conversationId: null },
+            }));
 
-            // 🔔 Récupérer uniquement les membres du groupe
-            const members = await GroupUser.findAll({
-              where: { GroupId: groupId },
-              attributes: ["UserId"],
-            });
+          if (dnd && dnd.enabled) {
+            const nowHour = new Date().getHours();
+            let inDND = true;
 
-            for (const member of members) {
-              const memberId = member.UserId;
+            // Vérification horaire
+            if (dnd.schedule) {
+              const [start, end] = dnd.schedule.split("-").map(Number);
+              inDND =
+                start < end
+                  ? nowHour >= start && nowHour < end
+                  : nowHour >= start || nowHour < end;
+            }
 
-              if (Number(memberId) === Number(userId)) continue;
+            // Vérification mots-clés (ignore le DND si mot-clé présent)
+            const containsKeyword = (dnd.keywords || []).some((kw) =>
+              content.toLowerCase().includes(kw.toLowerCase()),
+            );
 
-              if (onlineUsers.has(memberId)) {
-                onlineUsers.get(memberId).forEach((socketId) => {
-                  io.to(socketId).emit("newMessageNotification", {
-                    type: "group",
-                    groupId,
-                    from: msgWithUser.user,
-                    content,
-                  });
-                });
-              }
+            if (inDND && !containsKeyword) {
+              notify = false;
+              autoReply = dnd.autoReply;
             }
           }
+        }
 
-          // ================= MESSAGE PRIVE =================
-          if (recipientId) {
-            const room = "private_" + [userId, recipientId].sort().join("_");
+        // Sauvegarde du message initial
+        const msg = await Communication.create({
+          content,
+          groupId: groupId ? Number(groupId) : null,
+          recipientId: recipientId ? Number(recipientId) : null,
+          userId,
+          conversationId,
+          isRead: false,
+        });
 
-            // Envoyer message si la conversation est ouverte
+        const msgWithUser = await Communication.findByPk(msg.id, {
+          include: [
+            { model: User, attributes: ["id", "nom", "prenom"], as: "user" },
+          ],
+        });
+
+        // --- Diffusion du message ---
+        if (groupId) {
+          // Logique Groupe
+          socket
+            .to("group_" + Number(groupId))
+            .emit("receiveMessage", msgWithUser);
+          const members = await GroupUser.findAll({
+            where: { groupId: Number(groupId) },
+          });
+          members.forEach((m) => {
+            if (m.userId !== userId && onlineUsers.has(m.userId)) {
+              onlineUsers
+                .get(m.userId)
+                .forEach((sId) =>
+                  io
+                    .to(sId)
+                    .emit("newMessageNotification", {
+                      type: "group",
+                      groupId,
+                      from: msgWithUser.user,
+                      content,
+                    }),
+                );
+            }
+          });
+        } else if (recipientId) {
+          // Logique Privée
+          const room =
+            "private_" + [userId, Number(recipientId)].sort().join("_");
+
+          if (notify) {
             socket.to(room).emit("receiveMessage", msgWithUser);
-
-            // 🔔 Notification même si pas dans la room
-            if (onlineUsers.has(recipientId)) {
-              onlineUsers.get(recipientId).forEach((socketId) => {
-                io.to(socketId).emit("newMessageNotification", {
+            if (onlineUsers.has(Number(recipientId))) {
+              onlineUsers.get(Number(recipientId)).forEach((sId) =>
+                io.to(sId).emit("newMessageNotification", {
                   type: "private",
                   from: msgWithUser.user,
                   content,
                   conversationWith: userId,
-                });
-              });
+                }),
+              );
             }
+          } else if (autoReply) {
+            // Création automatique de la réponse système
+            const autoMsg = await Communication.create({
+              content: autoReply,
+              userId: Number(recipientId),
+              recipientId: userId,
+              conversationId,
+              isRead: false,
+              system: true,
+            });
+
+            const autoMsgWithUser = await Communication.findByPk(autoMsg.id, {
+              include: [
+                {
+                  model: User,
+                  attributes: ["id", "nom", "prenom"],
+                  as: "user",
+                },
+              ],
+            });
+
+            // Envoyer l'auto-reply uniquement à l'expéditeur initial
+            onlineUsers
+              .get(userId)
+              ?.forEach((sId) =>
+                io.to(sId).emit("receiveMessage", autoMsgWithUser),
+              );
           }
-        } catch (err) {
-          console.error("Erreur envoi message:", err);
         }
-      },
-    );
+      } catch (err) {
+        console.error("❌ socket error:", err);
+      }
+    });
 
-    // ================= DISCONNECT =================
+    // 3️⃣ DÉCONNEXION
     socket.on("disconnect", async () => {
-      onlineUsers.forEach((sockets, userId) => {
-        const filtered = sockets.filter((id) => id !== socket.id);
-
-        if (filtered.length > 0) {
-          onlineUsers.set(userId, filtered);
-        } else {
-          onlineUsers.delete(userId);
-        }
-      });
-
-      await updateOnlineUsers(io);
-
-      console.log("Utilisateur déconnecté:", socket.id);
+      const uId = socket.userId;
+      if (uId && onlineUsers.has(uId)) {
+        const filtered = onlineUsers.get(uId).filter((id) => id !== socket.id);
+        if (filtered.length > 0) onlineUsers.set(uId, filtered);
+        else onlineUsers.delete(uId);
+        await updateOnlineUsersByCompany(io, uId);
+      }
     });
   });
 
   return io;
 };
 
-// ================= HELPER =================
-
-const updateOnlineUsers = async (io) => {
-  const usersData = await User.findAll({
-    where: { id: Array.from(onlineUsers.keys()) },
-    attributes: ["id", "nom", "prenom"],
-  });
-
-  for (const [uid, sockets] of onlineUsers.entries()) {
-    const otherUsers = usersData.filter((u) => u.id !== Number(uid));
-
-    sockets.forEach((socketId) => {
-      io.to(socketId).emit("onlineUsers", otherUsers);
+const updateOnlineUsersByCompany = async (io, currentUserId) => {
+  try {
+    const onlineIds = Array.from(onlineUsers.keys());
+    const usersOnline = await User.findAll({
+      where: { id: onlineIds },
+      attributes: ["id", "entreprise"],
     });
+    const companyMap = {};
+    usersOnline.forEach((u) => {
+      if (!companyMap[u.entreprise]) companyMap[u.entreprise] = [];
+      companyMap[u.entreprise].push(u.id);
+    });
+
+    for (const [userId, sockets] of onlineUsers.entries()) {
+      const user = await User.findByPk(userId, { attributes: ["entreprise"] });
+      if (!user) continue;
+      const companyOnlineIds = companyMap[user.entreprise] || [];
+      sockets.forEach((socketId) =>
+        io.to(socketId).emit("onlineUsersBadge", companyOnlineIds),
+      );
+    }
+  } catch (err) {
+    console.error("Erreur updateOnlineUsers:", err);
   }
 };

@@ -1,97 +1,79 @@
-// ===============================================================
-// 👤 Modèle User (Utilisateur)
-// ===============================================================
 import { DataTypes } from "sequelize";
 import bcrypt from "bcrypt";
 import { sequelize } from "../config/db.js";
 
-// Définition du modèle utilisateur
 const User = sequelize.define(
   "User",
   {
+    id: {
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
+      primaryKey: true,
+    },
+
     type: {
-      type: DataTypes.ENUM("admin", "directeur", "user"),
+      type: DataTypes.ENUM("admin", "user"),
       allowNull: false,
+      defaultValue: "user",
     },
-    nom: {
+
+    secteur_activite: {
       type: DataTypes.STRING,
-      allowNull: false,
+      defaultValue: "AUTRE",
     },
-    prenom: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
+
+    nom: { type: DataTypes.STRING, allowNull: false },
+    prenom: { type: DataTypes.STRING, allowNull: false },
+
     email: {
       type: DataTypes.STRING,
       allowNull: false,
       unique: true,
       validate: { isEmail: true },
     },
-    password: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    telephone: {
-      type: DataTypes.STRING,
-    },
-    isActif: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true,
-    },
-    photo: {
-      type: DataTypes.STRING,
-    },
-    adresse: {
-      type: DataTypes.STRING,
-    },
-    pays: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    region: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    etablissement: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    doitChangerPassword: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true,
-    },
+
+    password: { type: DataTypes.STRING, allowNull: false },
+
+    telephone: DataTypes.STRING,
+    photo: DataTypes.STRING,
+
+    isActif: { type: DataTypes.BOOLEAN, defaultValue: true },
+    doitChangerPassword: { type: DataTypes.BOOLEAN, defaultValue: true },
+
+    entreprise: DataTypes.STRING,
+    adresse: DataTypes.STRING,
+    pays: DataTypes.STRING,
+    pays_code: DataTypes.STRING(2),
+    region: DataTypes.STRING,
   },
   {
     timestamps: true,
     tableName: "users",
-    schema: process.env.DB_SCHEMA, // <--- ajout du schema TRV_TMSG
-  }
+    schema: process.env.DB_SCHEMA || "public",
+    freezeTableName: true,
+  },
 );
 
-// ===============================================================
-// 🔐 Hachage du mot de passe avant création ou mise à jour
-// ===============================================================
+// 🔐 Hash password
 User.beforeCreate(async (user) => {
-  const salt = await bcrypt.genSalt(10);
-  user.password = await bcrypt.hash(user.password, salt);
+  if (user.password) {
+    user.password = await bcrypt.hash(user.password, 10);
+  }
 });
 
 User.beforeUpdate(async (user) => {
   if (user.changed("password")) {
-    const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(user.password, salt);
+    user.password = await bcrypt.hash(user.password, 10);
   }
 });
 
-// ===============================================================
-// 🔑 Méthode personnalisée : connexion utilisateur
-// ===============================================================
+// 🔑 Login method
 User.login = async function (email, password) {
   const user = await User.findOne({ where: { email } });
   if (!user) throw new Error("Email ou mot de passe incorrect");
 
-  const auth = await bcrypt.compare(password, user.password);
-  if (!auth) throw new Error("Email ou mot de passe incorrect");
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) throw new Error("Email ou mot de passe incorrect");
 
   if (!user.isActif)
     throw new Error("Compte désactivé. Contactez l'administrateur.");

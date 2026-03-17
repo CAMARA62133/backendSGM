@@ -1,57 +1,58 @@
-// ==============================
-// controllers/userControllers.js
-// ==============================
 import fs from "fs";
 import crypto from "crypto";
 import XLSX from "xlsx";
-import User from "../models/User.js";
+import path from "path";
+// ✅ Import centralisé pour garantir la cohérence des hooks et relations
+import { User } from "../models/index.js";
 import { sendEmail } from "../utils/email.js";
 
 /**
  * --- CRÉER UN UTILISATEUR (Individuel) ---
- * Génère un mot de passe temporaire et force le changement à la première connexion.
  */
 export const createUser = async (req, res) => {
   try {
     const { email, ...rest } = req.body;
 
-    // Vérification unicité
     const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
       return res.status(409).json({ message: "Cet email est déjà utilisé" });
     }
 
-    // Mot de passe temporaire & Photo
+    // Génération d'un mot de passe temporaire lisible (8 caractères)
     const tempPassword = crypto.randomBytes(4).toString("hex");
     const photoPath = req.file ? `/uploads/photos/${req.file.filename}` : null;
 
     const user = await User.create({
       ...rest,
       email,
-      password: tempPassword, // Haché automatiquement par le modèle
+      password: tempPassword, // Le hook "beforeCreate" du modèle s'occupera du hashage
       photo: photoPath,
       doitChangerPassword: true,
+      isActif: true,
     });
 
-    // Lien de redirection vers le frontend
     const resetLink = `${process.env.FRONTEND_URL}/change-password?userId=${user.id}`;
 
+    // Envoi de l'email de bienvenue
     await sendEmail(
       user.email,
-      "Accès à votre compte ✅",
-      `<p>Bonjour ${user.prenom},</p>
-       <p>Votre compte a été créé par l'administrateur.</p>
-       <p>Identifiants :<br>Email: <strong>${user.email}</strong><br>
-       Mot de passe temporaire: <strong>${tempPassword}</strong></p>
-       <p>Veuillez <a href="${resetLink}">cliquer ici</a> pour définir votre mot de passe personnel.</p>`,
+      "Accès à votre compte SygmaHub ✅",
+      `<div style="font-family: sans-serif;">
+        <p>Bonjour <strong>${user.prenom}</strong>,</p>
+        <p>Votre compte pro a été créé pour l'entreprise <strong>${user.entreprise || "SygmaHub"}</strong>.</p>
+        <p><strong>Identifiants :</strong><br>
+        Email : ${user.email}<br>
+        Mot de passe temporaire : <code>${tempPassword}</code></p>
+        <p>Veuillez <a href="${resetLink}">cliquer ici</a> pour définir votre mot de passe personnel.</p>
+      </div>`,
     );
 
-    res.status(201).json({ message: "Utilisateur enregistré avec succès" });
+    res
+      .status(201)
+      .json({ success: true, message: "Utilisateur enregistré avec succès" });
   } catch (error) {
     console.error("Erreur createUser:", error);
-    res
-      .status(500)
-      .json({ message: "Erreur lors de la création de l'utilisateur" });
+    res.status(500).json({ message: "Erreur lors de la création" });
   }
 };
 
@@ -66,18 +67,20 @@ export const updateUser = async (req, res) => {
     if (!user)
       return res.status(404).json({ message: "Utilisateur introuvable" });
 
-    // Filtrage des champs autorisés
     const allowedFields = [
       "type",
+      "secteur_activite",
       "nom",
       "prenom",
       "email",
       "telephone",
       "adresse",
       "pays",
+      "pays_code",
       "region",
-      "etablissement",
+      "entreprise",
       "password",
+      "isActif",
     ];
 
     const dataToUpdate = {};
@@ -85,25 +88,28 @@ export const updateUser = async (req, res) => {
       if (req.body[field] !== undefined) dataToUpdate[field] = req.body[field];
     });
 
-    // Gestion de la photo (Suppression de l'ancienne si nouvelle)
+    // Gestion du changement de photo
     if (req.file) {
-      if (user.photo && fs.existsSync(`./public${user.photo}`)) {
-        try {
-          fs.unlinkSync(`./public${user.photo}`);
-        } catch (e) {
-          console.error(e);
+      if (user.photo) {
+        const oldPath = path.join(process.cwd(), "public", user.photo);
+        if (fs.existsSync(oldPath)) {
+          try {
+            fs.unlinkSync(oldPath);
+          } catch (e) {
+            console.error("Erreur unlink photo:", e);
+          }
         }
       }
       dataToUpdate.photo = `/uploads/photos/${req.file.filename}`;
     }
 
+    // Si le mot de passe est mis à jour manuellement par un admin, on peut forcer le changement
+    if (dataToUpdate.password) {
+      user.doitChangerPassword = true;
+    }
+
     await user.update(dataToUpdate);
-
-    const updatedUser = await User.findByPk(id, {
-      attributes: { exclude: ["password"] },
-    });
-
-    res.json({ message: "Utilisateur mis à jour", user: updatedUser });
+    res.json({ success: true, message: "Mise à jour réussie" });
   } catch (error) {
     console.error("Erreur updateUser:", error);
     res.status(500).json({ message: "Erreur lors de la mise à jour" });
@@ -111,27 +117,28 @@ export const updateUser = async (req, res) => {
 };
 
 /**
- * --- RÉCUPÉRER TOUS LES UTILISATEURS (Filtré par droits) ---
+ * --- RÉCUPÉRER TOUS LES UTILISATEURS ---
  */
 export const getAllUsers = async (req, res) => {
   try {
     const loggedUser = req.user;
     let whereClause = {};
 
-    // Restriction pour les directeurs
-    if (loggedUser.type === "directeur") {
-      whereClause.etablissement = loggedUser.etablissement;
-    } else if (loggedUser.type !== "admin" && loggedUser.type !== "user") {
-      return res.status(403).json({ message: "Accès non autorisé" });
+    // Restriction : un utilisateur standard ne voit que ses collègues
+    if (loggedUser.type === "user") {
+      whereClause.entreprise = loggedUser.entreprise;
     }
 
     const users = await User.findAll({
       where: whereClause,
       attributes: { exclude: ["password"] },
-      order: [["createdAt", "DESC"]],
+      order: [
+        ["nom", "ASC"],
+        ["prenom", "ASC"],
+      ],
     });
 
-    res.json({ users });
+    res.json({ success: true, users });
   } catch (err) {
     res.status(500).json({ message: "Erreur serveur" });
   }
@@ -166,16 +173,19 @@ export const deleteUser = async (req, res) => {
     if (!user)
       return res.status(404).json({ message: "Utilisateur non trouvé." });
 
-    if (user.photo && fs.existsSync(`./public${user.photo}`)) {
-      try {
-        fs.unlinkSync(`./public${user.photo}`);
-      } catch (e) {
-        console.error(e);
+    if (user.photo) {
+      const photoPath = path.join(process.cwd(), "public", user.photo);
+      if (fs.existsSync(photoPath)) {
+        try {
+          fs.unlinkSync(photoPath);
+        } catch (e) {
+          console.error(e);
+        }
       }
     }
 
     await user.destroy();
-    res.json({ message: "Utilisateur supprimé avec succès." });
+    res.json({ success: true, message: "Utilisateur supprimé avec succès." });
   } catch (err) {
     res.status(500).json({ message: "Erreur lors de la suppression" });
   }
@@ -189,27 +199,29 @@ export const changePassword = async (req, res) => {
     const { userId, email, newPassword } = req.body;
     let user;
 
-    // Vérifier l'utilisateur par ID ou email
     if (userId) user = await User.findByPk(userId);
     else if (email) user = await User.findOne({ where: { email } });
 
     if (!user)
       return res.status(404).json({ message: "Utilisateur introuvable." });
 
-    // Si pas de nouveau mot de passe, c'est juste la vérification de l'existence
+    // Étape 1 : Vérification de l'existence (si pas de nouveau password fourni)
     if (!newPassword) {
       return res.status(200).json({
-        message: "Utilisateur trouvé. Vous pouvez maintenant changer le mot de passe.",
-        userId: user.id, // utile pour la prochaine étape
+        success: true,
+        message: "Utilisateur identifié.",
+        userId: user.id,
       });
     }
 
-    // Sinon, on change le mot de passe
-    user.password = newPassword;
+    // Étape 2 : Mise à jour réelle
+    user.password = newPassword; // Sera hashé par le hook beforeUpdate/beforeSave
     user.doitChangerPassword = false;
     await user.save();
 
-    res.status(200).json({ message: "Mot de passe mis à jour avec succès." });
+    res
+      .status(200)
+      .json({ success: true, message: "Mot de passe mis à jour avec succès." });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -232,7 +244,7 @@ export const importUsers = async (req, res) => {
     const emailData = [];
 
     for (const row of sheet) {
-      if (!row.email || !row.nom) continue;
+      if (!row.email) continue;
 
       const tempPassword = crypto.randomBytes(4).toString("hex");
       usersToCreate.push({
@@ -240,33 +252,39 @@ export const importUsers = async (req, res) => {
         type: row.type || "user",
         password: tempPassword,
         doitChangerPassword: true,
+        isActif: true,
       });
       emailData.push({ email: row.email, prenom: row.prenom, tempPassword });
     }
 
-    // Utilisation de individualHooks pour forcer le hachage via le modèle
+    // Utilisation de individualHooks pour garantir le hashage des mots de passe temporaires
     const createdUsers = await User.bulkCreate(usersToCreate, {
       individualHooks: true,
       ignoreDuplicates: true,
     });
 
-    // Envoi des emails aux comptes réellement créés
-    for (const info of emailData) {
+    // Envoi différé des emails pour ne pas bloquer l'import
+    emailData.forEach((info) => {
       const resetLink = `${process.env.FRONTEND_URL}/change-password`;
       sendEmail(
         info.email,
-        "Votre compte est prêt ✅",
-        `<p>Bonjour ${info.prenom}, votre mot de passe temporaire est : <strong>${info.tempPassword}</strong>. <br> Changez-le ici : <a href="${resetLink}">Lien</a></p>`,
-      );
-    }
+        "Votre compte SygmaHub est prêt ✅",
+        `<p>Bonjour ${info.prenom},</p>
+         <p>Votre mot de passe temporaire est : <strong>${info.tempPassword}</strong></p>
+         <p><a href="${resetLink}">Cliquez ici pour personnaliser votre accès.</a></p>`,
+      ).catch((e) => console.error(`Email non envoyé à ${info.email}:`, e));
+    });
 
+    // Nettoyage du fichier temporaire
     if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
 
-    res
-      .status(201)
-      .json({ message: `${createdUsers.length} utilisateurs importés.` });
+    res.status(201).json({
+      success: true,
+      message: `${createdUsers.length} utilisateurs importés avec succès.`,
+    });
   } catch (err) {
     console.error("Erreur Import:", err);
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
     res.status(500).json({ message: "Erreur lors de l'importation." });
   }
 };

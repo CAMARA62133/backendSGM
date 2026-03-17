@@ -1,36 +1,36 @@
 import { DataTypes, Model } from "sequelize";
 import { sequelize } from "../config/db.js";
-import User from "./User.js";
-import Group from "./group.js";
 
 class Communication extends Model {}
 
 Communication.init(
   {
-    content: { type: DataTypes.STRING, allowNull: false },
-    channel: { type: DataTypes.STRING, allowNull: true },
+    id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
+    content: { type: DataTypes.TEXT, allowNull: false }, 
+    channel: DataTypes.STRING,
+
     userId: { type: DataTypes.INTEGER, allowNull: false },
-    recipientId: { type: DataTypes.INTEGER, allowNull: true },
-    groupId: { type: DataTypes.INTEGER, allowNull: true },
-    // 🟢 AJOUT : État de lecture pour les badges de notification
-    isRead: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-      allowNull: false,
-    },
+    recipientId: DataTypes.INTEGER,
+    groupId: DataTypes.INTEGER,
+    fileId: DataTypes.INTEGER,
+    pollId: DataTypes.INTEGER,
+
+    conversationId: { type: DataTypes.INTEGER, allowNull: false },
+
+    isRead: { type: DataTypes.BOOLEAN, defaultValue: false },
+    isDeleted: { type: DataTypes.BOOLEAN, defaultValue: false },
+    isEdited: { type: DataTypes.BOOLEAN, defaultValue: false },
+
+    hiddenBy: { type: DataTypes.JSON, defaultValue: [] },
   },
   {
     sequelize,
     modelName: "Communication",
     tableName: "communication",
+    schema: process.env.DB_SCHEMA || "public",
     timestamps: true,
+    freezeTableName: true,
   },
 );
-
-// Associations
-Communication.belongsTo(User, { foreignKey: "userId", as: "user" });
-Communication.belongsTo(User, { foreignKey: "recipientId", as: "recipient" });
-Communication.belongsTo(Group, { foreignKey: "groupId", as: "group" });
-User.hasMany(Communication, { foreignKey: "userId", as: "messages" });
 
 export default Communication;
